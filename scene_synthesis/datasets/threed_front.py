@@ -280,11 +280,23 @@ class CachedThreedFront(ThreedFront):
         # add it for scene_type
         self._parse_train_stats(config["train_stats"])
         
+        # Match directory names with scene_ids from CSV
+        # scene_ids are full IDs like "210663604_Bath_US_simple_design_filtered"
+        # Check if directory name matches or contains the scene_id
+        scene_ids_set = set(scene_ids)
         self._tags = sorted([
             oi
             for oi in os.listdir(self._base_dir)
-            if oi.split("_")[1] in scene_ids
+            if oi in scene_ids_set or any(scene_id in oi for scene_id in scene_ids_set)
         ])
+        
+        if not self._tags:
+            raise ValueError(
+                f"No matching directories found in {self._base_dir} for scene_ids. "
+                f"Found {len(os.listdir(self._base_dir))} directories. "
+                f"Looking for scene_ids starting with: {list(scene_ids_set)[:5]}..."
+            )
+        
         self._path_to_rooms = sorted([
             os.path.join(self._base_dir, pi, "boxes.npz")
             for pi in self._tags
