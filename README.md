@@ -1,3 +1,74 @@
+# Houzz DiffuScene
+We build houzz DiffuScene on top of DiffuScene
+## Quickstart: Train Houzz Bathroom v1 Model
+
+This section provides a quick guide to train the Houzz bathroom v1 model from scratch.
+
+### Step 1: Install Environment
+Navigate to the DiffuScene directory and run the installation script:
+```bash
+cd DiffuScene/
+./install.sh
+```
+
+### Step 2: Activate Conda Environment
+Activate the conda environment:
+```bash
+conda activate conda-envs/diffuscene/
+```
+
+### Step 3: Prepare Data
+Create the data directory and download the dataset from Google Drive:
+```bash
+mkdir data
+cd data/
+gdown https://drive.google.com/file/d/1zr11vLPFGQCgXIzSu3SHxQPtbyMOxO4k/view?usp=drive_link
+unzip bathroom_svg_files.zip
+cd ../
+```
+
+### Step 4: Preprocess Data
+Run the preprocessing script:
+```bash
+python scripts/preprocess_houzz_bathroom.py
+```
+Compute dataset statistics:
+```bash
+python scripts/compute_houzz_stats.py
+```
+
+## Test Model
+Create the model directory and download the pretrained model:
+```bash
+mkdir -p model
+cd model/
+gdown --fuzzy https://drive.google.com/file/d/15jn4zhPq19EYbkC3FSPJpvCnU6lns9M2/view?usp=drive_link
+cd ../
+```
+
+Generate scenes using the pretrained model:
+```bash
+bash run/generate_houzz_bathroom.sh
+```
+
+Visualize the generated results:
+```bash
+python scripts/visualize_houzz_results.py --input_dir output/houzz_bathroom_v1/generated_results/
+```
+You can see top-down SVG image like 
+<div style="text-align: center">
+<img src="media/comparison_grid.svg" />
+</div>
+
+## Train Model
+Start training the Houzz bathroom v1 model:
+```bash
+bash run/train_houzz_bathroom.sh
+```
+
+
+=================================
+
 # DiffuScene
 
 [**Paper**](https://arxiv.org/abs/2303.14207.pdf) | [**arXiv**](https://arxiv.org/abs/2303.14207.pdf)  | [**Video**](https://www.youtube.com/embed/PFi-03T1lN0) | [**Project Page**](https://tangjiapeng.github.io/projects/DiffuScene/) <br>
