@@ -1,6 +1,11 @@
 # Houzz DiffuScene
 We build houzz DiffuScene on top of DiffuScene
 ## Quickstart: Train Houzz Bathroom v1 Model
+Clone project 
+```bash
+git clone https://github.com/yunghsiangchuang-houzz/DiffuScene.git
+git checkout v1_partial_condition
+```
 
 This section provides a quick guide to train the Houzz bathroom v1 model from scratch.
 
