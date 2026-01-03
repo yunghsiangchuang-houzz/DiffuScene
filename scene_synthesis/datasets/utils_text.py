@@ -66,7 +66,11 @@ from nltk.corpus import cmudict
 """
 Taken from https://stackoverflow.com/questions/20336524/verify-correct-use-of-a-and-an-in-english-texts-python
 """
-
+# Download cmudict if not available
+try:
+    cmudict.dict()
+except LookupError:
+    nltk.download('cmudict', quiet=True)
 
 def starts_with_vowel_sound(word, pronunciations=cmudict.dict()):
     for syllables in pronunciations.get(word, []):
