@@ -79,9 +79,10 @@ def main(argv):
         os.makedirs(args.output_directory)
 
     config = load_config(args.config_file)
+    
     # Override for inference on specific small split
-    config["data"]["annotation_file"] = args.split_file
-    config["validation"]["splits"] = ["train", "test"]
+    # config["data"]["annotation_file"] = args.split_file
+    # config["validation"]["splits"] = ["train", "test"]
 
     ########## make it for evaluation
     if 'text' in config["data"]["encoding_type"]:
@@ -98,9 +99,9 @@ def main(argv):
         config["data"],
         filter_fn=filter_function(
             config["data"],
-            split=config["validation"].get("splits", ["train", "test"])
+            split=config["validation"].get("splits", ["test"])
         ),
-        split=config["validation"].get("splits", ["train", "test"])
+        split=config["validation"].get("splits", ["test"])
     )
 
 
