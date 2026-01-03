@@ -94,11 +94,11 @@ echo ""
 echo "Step 4: Installing package in editable mode..."
 pip install -e .
 
-# Step 4b: Download required NLTK data
+# Step 4c: Install open3d (with --ignore-installed to handle PyYAML conflicts)
 echo ""
-echo "Step 4b: Downloading required NLTK data..."
-python -c "import nltk; nltk.download('cmudict', quiet=True); nltk.download('punkt', quiet=True)"
-echo "NLTK data downloaded successfully"
+echo "Step 4b: Installing open3d..."
+pip install --ignore-installed pyyaml open3d
+echo "open3d installed successfully"
 
 # Step 5: Install ChamferDistancePytorch
 echo ""
