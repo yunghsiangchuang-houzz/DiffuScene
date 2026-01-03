@@ -6,4 +6,5 @@ __pycache__
 pretrained
 data/
 conda-envs/
-
+output/
+model/

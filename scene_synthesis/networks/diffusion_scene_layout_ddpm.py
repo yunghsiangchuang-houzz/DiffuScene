@@ -350,13 +350,18 @@ class DiffusionSceneLayout_DDPM(Module):
 
     @torch.no_grad()
     def delete_empty_from_network_samples(self, samples, device="cpu", keep_empty=False):
-        
+        # For Houzz data with objectness_dim=0, objectness is the last channel in class_labels  
+        if self.objectness_dim == 0:
+            num_one_hot_classes = self.n_classes - 1  # e.g., 9-1=8 for Houzz
+        else:
+            num_one_hot_classes = self.n_classes - 2  # Original logic for separate objectness
+            
         samples_dict = {
             "translations": samples[:, :, 0:self.translation_dim].contiguous(),
             "sizes": samples[:, :,  self.translation_dim:self.translation_dim+self.size_dim].contiguous(),
             "angles": samples[:, :, self.translation_dim+self.size_dim:self.bbox_dim].contiguous(),
             "class_labels": nn.functional.one_hot( torch.argmax(samples[:, :, self.bbox_dim:self.bbox_dim+self.class_dim-1].contiguous(), dim=-1), \
-                            num_classes=self.n_classes-2),
+                            num_classes=num_one_hot_classes),
             "objectness": samples[:, :, self.bbox_dim+self.class_dim-1:self.bbox_dim+self.class_dim]>=0,
         }
         if self.objfeat_dim > 0:
@@ -365,7 +370,7 @@ class DiffusionSceneLayout_DDPM(Module):
         #initilization
         boxes = {
             "objectness": torch.zeros(1, 0, 1, device=device),
-            "class_labels": torch.zeros(1, 0, self.n_classes-2, device=device),
+            "class_labels": torch.zeros(1, 0, num_one_hot_classes, device=device), 
             "translations": torch.zeros(1, 0, self.translation_dim, device=device),
             "sizes": torch.zeros(1, 0, self.size_dim, device=device),
             "angles": torch.zeros(1, 0, self.angle_dim, device=device)
