@@ -24,6 +24,7 @@ conda activate conda-envs/diffuscene/
 
 ### Step 3: Prepare Data
 Create the data directory and download the dataset from Google Drive:
+#### dataset1 : 496 dataset
 ```bash
 mkdir data
 cd data/
@@ -31,7 +32,14 @@ gdown https://drive.google.com/file/d/1zr11vLPFGQCgXIzSu3SHxQPtbyMOxO4k/view?usp
 unzip bathroom_svg_files.zip
 cd ../
 ```
-
+#### dataset2 : 2074 dataset
+```bash
+mkdir data
+cd data/
+aws s3 cp s3://houzz-3d-takeoff-floorplan-training/3d-layout-bathroom-2k/bathroom_2.2k.zip
+unzip bathroom_2.2k.zip
+cd ../
+```
 ### Step 4: Preprocess Data
 Run the preprocessing script:
 ```bash
