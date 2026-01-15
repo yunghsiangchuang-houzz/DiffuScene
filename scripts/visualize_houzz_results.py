@@ -4,6 +4,7 @@ import numpy as np
 import json
 import math
 from pathlib import Path
+from tqdm import tqdm
 
 # Color palette from floorplan2dataset_v3.py
 COLOR_PALETTE = {
@@ -55,7 +56,7 @@ def get_bounding_box_corners(center, size, angle):
     
     corners = []
     for lx, lz in local_corners:
-        rx, rz = rotate_point(lx, lz, angle)
+        rx, rz = rotate_point(lx, lz, -angle)
         corners.append((cx + rx, cz + rz))
         
     return corners
@@ -229,8 +230,10 @@ def main():
             
     print(f"Found {len(scene_dirs)} scenes with generations.")
     
-    for scene_dir, npz_filenames in scene_dirs.items():
-        print(f"\nProcessing scene: {scene_dir.name}")
+    pbar = tqdm(scene_dirs.items(), desc="Processing scenes", unit="scene")
+    for scene_dir, npz_filenames in pbar:
+        house_id = scene_dir.name
+        pbar.set_description(f"Processing {house_id}")
         
         # Determine bounds from original JSON if possible
         original_json_path = scene_dir / "simple_design_filtered.json"
@@ -254,9 +257,8 @@ def main():
                     xs = [p[0] for p in all_json_points]
                     zs = [p[1] for p in all_json_points]
                     bounds = (min(xs), max(xs), min(zs), max(zs))
-                    print(f"  Using bounds from original JSON")
-            except Exception as e:
-                print(f"  Warning: Failed to parse original JSON for bounds: {e}")
+            except Exception:
+                pass
 
         # 2. Generate individual SVGs
         gen_contents = []
@@ -292,20 +294,48 @@ def main():
         
         # Add Arch first
         arch_svg_path = scene_dir / "simple_design_arch.svg"
+        arch_content = None
         if arch_svg_path.exists():
             with open(arch_svg_path, 'r') as f_arch:
                 arch_svg = f_arch.read()
             import re
             arch_match = re.search(r'<svg[^>]*>(.*)</svg>', arch_svg, re.DOTALL)
             if arch_match:
-                grid_items.append(("Arch", arch_match.group(1)))
+                arch_content = arch_match.group(1)
+        else:
+            # Fallback: use simple_design_label.svg but filter to only arch elements
+            label_svg_path = scene_dir / "simple_design_label.svg"
+            if label_svg_path.exists():
+                with open(label_svg_path, 'r') as f_label:
+                    label_svg = f_label.read()
+                import re
+                label_match = re.search(r'<svg[^>]*>(.*)</svg>', label_svg, re.DOTALL)
+                if label_match:
+                    # Filter to only keep floor, wall, door, window colors
+                    arch_colors = [
+                        "rgb(211,211,211)",  # floor
+                        "rgb(0,0,153)",      # wall
+                        "rgb(153,0,0)",      # door
+                        "rgb(255,153,153)",  # window
+                    ]
+                    filtered_elements = []
+                    # Parse each element and keep only arch elements
+                    for element in re.findall(r'<(?:rect|polygon|path)[^>]*/?>', label_match.group(1)):
+                        for color in arch_colors:
+                            if color in element:
+                                filtered_elements.append(element)
+                                break
+                    arch_content = '\n'.join(filtered_elements)
+        
+        if arch_content:
+            grid_items.append(("Arch", arch_content))
         
         # Add Generations
         for name, content in gen_contents:
             grid_items.append((f"Sample {name}", content))
             
         # Add Original last
-        original_svg_path = scene_dir / "simple_design_label_2.svg"
+        original_svg_path = scene_dir / "simple_design_label.svg"
         if original_svg_path.exists():
             with open(original_svg_path, 'r') as f_orig:
                 original_svg = f_orig.read()
@@ -373,7 +403,6 @@ def main():
             comparison_path = scene_dir / "comparison_grid.svg"
             with open(comparison_path, 'w') as f_grid:
                 f_grid.write('\n'.join(grid_svg))
-            print(f"  Saved grid: {comparison_path.relative_to(args.input_dir)}")
 
     print("\nDone visualization.")
 

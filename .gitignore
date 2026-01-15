@@ -8,3 +8,6 @@ data/
 conda-envs/
 output/
 model/
+docs/
+wandb/
+scripts/wandb/

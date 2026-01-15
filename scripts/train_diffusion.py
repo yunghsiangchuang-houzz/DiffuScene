@@ -71,6 +71,11 @@ def main(argv):
         action="store_true",
         help="Use wandB for logging the training progress"
     )
+    parser.add_argument(
+        "--multi_gpu",
+        action="store_true",
+        help="Use multiple GPUs with DataParallel"
+    )
 
     args = parser.parse_args(argv)
 
@@ -88,6 +93,13 @@ def main(argv):
     else:
         device = torch.device("cpu")
     print("Running code on", device)
+    
+    # Check for multiple GPUs
+    if args.multi_gpu and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs for training")
+        use_multi_gpu = True
+    else:
+        use_multi_gpu = False
 
     # Check if output directory exists and if it doesn't create it
     if not os.path.exists(args.output_directory):
@@ -180,6 +192,13 @@ def main(argv):
         train_dataset.feature_size, train_dataset.n_classes,
         config, args.weight_file, device=device
     )
+    
+    # Wrap with DataParallel if using multiple GPUs
+    if use_multi_gpu:
+        from scene_synthesis.networks.diffusion_scene_layout_ddpm import DataParallelWithGetLoss
+        network = DataParallelWithGetLoss(network)
+        print(f"Model wrapped with DataParallel across {torch.cuda.device_count()} GPUs")
+    
     n_all_params = int(sum([np.prod(p.size()) for p in network.parameters()]))
     n_trainable_params = int(sum([np.prod(p.size()) for p in filter(lambda p: p.requires_grad, network.parameters())]))
     print(f"Number of parameters in {network.__class__.__name__}:  {n_trainable_params} / {n_all_params}")
@@ -217,6 +236,9 @@ def main(argv):
     save_every = config["training"].get("save_frequency", 10)
     val_every = config["validation"].get("frequency", 100)
 
+    # Track best validation loss for saving best model
+    best_val_loss = float('inf')
+
     # Do the training
     for i in range(args.continue_from_epoch, epochs):
         # adjust learning rate
@@ -244,6 +266,7 @@ def main(argv):
         if i % val_every == 0 and i > 0:
             print("====> Validation Epoch ====>")
             network.eval()
+            val_losses = []
             for b, sample in enumerate(val_loader):
                 # Move everything to device
                 for k, v in sample.items():
@@ -251,7 +274,28 @@ def main(argv):
                         sample[k] = v.to(device)
                 batch_loss = validate_on_batch(network, sample, config)
                 StatsLogger.instance().print_progress(-1, b+1, batch_loss)
+                # Track loss for best model saving
+                if isinstance(batch_loss, dict) and "loss" in batch_loss:
+                    val_losses.append(batch_loss["loss"])
+                elif isinstance(batch_loss, (int, float)):
+                    val_losses.append(batch_loss)
             StatsLogger.instance().clear()
+            
+            # Compute average validation loss and save best model
+            if val_losses:
+                avg_val_loss = sum(val_losses) / len(val_losses)
+                print(f"Epoch {i} - Average Validation Loss: {avg_val_loss:.6f}")
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    print(f"New best validation loss: {best_val_loss:.6f} - Saving best model...")
+                    torch.save(
+                        network.state_dict(),
+                        os.path.join(experiment_directory, "model_best")
+                    )
+                    torch.save(
+                        optimizer.state_dict(),
+                        os.path.join(experiment_directory, "opt_best")
+                    )
             print("====> Validation Epoch ====>")
 
 

@@ -1,8 +1,9 @@
 data:
     dataset_type: "cached_threed_front"
     encoding_type: "cached_diffusion_cosin_angle_wocm"
-    dataset_directory: "../data/houzz_bathroom_processed"
-    annotation_file: "../config/houzz_bathroom_splits_v1.csv"
+    dataset_directory: "../data/bathroom_2.2k_filter/3d_front_format"
+    annotation_file: "../config/houzz_bathroom_splits_v1.2.csv"
+    # augmentations: ["fixed_rotations"]
     train_stats: "dataset_stats.txt"
     room_layout_size: "64,64"
     max_length: 50
@@ -40,7 +41,7 @@ network:
         model_var_type: 'fixedsmall'
         loss_separate: true
         loss_iou: true
-        train_stats_file: ../data/houzz_bathroom_processed/dataset_stats.txt
+        train_stats_file: ../data/bathroom_2.2k_filter/3d_front_format/dataset_stats.txt
 
 
     net_kwargs:
@@ -62,11 +63,11 @@ feature_extractor:
     input_channels: 1
 
 training:
-    splits: ["train", "val"]
+    splits: ["train"]
     epochs: 60000
     steps_per_epoch: 500
-    batch_size: 128
-    save_frequency: 2000
+    batch_size: 256
+    save_frequency: 20
     max_grad_norm: 10
     # optimizer
     optimizer: Adam
@@ -79,8 +80,8 @@ training:
     
 
 validation:
-    splits: ["test"]
-    frequency: 200
+    splits: ["val"]
+    frequency: 10
     batch_size: 128
     gen_traj: false
     num_step: 100
@@ -89,5 +90,6 @@ validation:
 
 
 logger:
-    project: "houzz_bathroom"
+    project: "houzz_bathroom_v1.2_no_aug"
     platform: "wandb"
+

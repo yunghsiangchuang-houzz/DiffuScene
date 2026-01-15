@@ -11,6 +11,83 @@ from ..stats_logger import StatsLogger
 from transformers import BertTokenizer, BertModel
 import clip
 
+
+class DataParallelWithGetLoss(nn.DataParallel):
+    """Custom DataParallel wrapper that exposes get_loss method and properly parallelizes it."""
+    def get_loss(self, sample_params):
+        # DataParallel needs to split the batch across GPUs
+        # We'll manually split sample_params and call get_loss on each GPU's replica
+        
+        # Get the batch size from any tensor in sample_params
+        batch_size = None
+        for key, value in sample_params.items():
+            if isinstance(value, torch.Tensor):
+                batch_size = value.size(0)
+                break
+        
+        if batch_size is None or len(self.device_ids) == 1:
+            # Fallback: call on underlying module
+            return self.module.get_loss(sample_params)
+        
+        # Split sample_params across GPUs
+        num_gpus = len(self.device_ids)
+        chunk_size = (batch_size + num_gpus - 1) // num_gpus
+        
+        # Prepare inputs for each GPU
+        inputs = []
+        for i in range(num_gpus):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, batch_size)
+            if start_idx >= batch_size:
+                inputs.append(None)
+                continue
+            
+            chunk_sample_params = {}
+            for key, value in sample_params.items():
+                if isinstance(value, torch.Tensor):
+                    chunk_sample_params[key] = value[start_idx:end_idx].to(self.device_ids[i])
+                elif isinstance(value, list):
+                    chunk_sample_params[key] = value[start_idx:end_idx]
+                else:
+                    chunk_sample_params[key] = value
+            inputs.append(chunk_sample_params)
+        
+        # Use DataParallel's replicate to create replicas on each GPU
+        replicas = self.replicate(self.module, self.device_ids)
+        
+        # Call get_loss on each replica
+        outputs = []
+        for i, replica in enumerate(replicas):
+            if inputs[i] is not None:
+                loss, loss_dict = replica.get_loss(inputs[i])
+                # Move results to output device
+                loss = loss.to(self.output_device)
+                loss_dict_moved = {}
+                for k, v in loss_dict.items():
+                    if isinstance(v, torch.Tensor):
+                        loss_dict_moved[k] = v.to(self.output_device)
+                    else:
+                        loss_dict_moved[k] = v
+                outputs.append((loss, loss_dict_moved))
+        
+        if not outputs:
+            return self.module.get_loss(sample_params)
+        
+        # Gather and average losses
+        gathered_losses = [out[0] for out in outputs]
+        final_loss = torch.stack(gathered_losses).mean()
+        
+        # Gather and average loss_dict components
+        final_loss_dict = {}
+        for key in outputs[0][1].keys():
+            gathered_values = [out[1][key] for out in outputs]
+            if isinstance(gathered_values[0], torch.Tensor):
+                final_loss_dict[key] = torch.stack(gathered_values).mean()
+            else:
+                final_loss_dict[key] = sum(gathered_values) / len(gathered_values)
+        
+        return final_loss, final_loss_dict
+
 class DiffusionSceneLayout_DDPM(Module):
 
     def __init__(self, n_classes, feature_extractor, config):
@@ -229,7 +306,20 @@ class DiffusionSceneLayout_DDPM(Module):
                partial_boxes=None, input_boxes=None, ret_traj=False, ddim=False, clip_denoised=False, freq=40, batch_seeds=None, 
                 ):
         device = room_mask.device
-        noise = torch.randn((batch_size, num_points, point_dim))#, device=room_mask.device)
+        
+        # Generate seeded noise for reproducibility
+        if batch_seeds is not None:
+            noise_list = []
+            for seed in batch_seeds:
+                gen = torch.Generator(device='cpu')
+                gen.manual_seed(int(seed.item()))
+                noise_list.append(torch.randn((1, num_points, point_dim), generator=gen))
+            noise = torch.cat(noise_list, dim=0)
+        else:
+            noise = torch.randn((batch_size, num_points, point_dim))
+        
+        # Move noise to device after generation
+        noise = noise.to(device)
 
         # get the latent feature of room_mask
         if self.room_mask_condition:
@@ -333,9 +423,9 @@ class DiffusionSceneLayout_DDPM(Module):
         return boxes_traj
     
     @torch.no_grad()
-    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False):
+    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, text=None, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False):
         
-        samples = self.sample(room_mask, num_points, point_dim, batch_size, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds)
+        samples = self.sample(room_mask, num_points, point_dim, batch_size, text=text, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds)
 
         return self.delete_empty_from_network_samples(samples, device=device, keep_empty=keep_empty)
     
@@ -367,23 +457,37 @@ class DiffusionSceneLayout_DDPM(Module):
         if self.objfeat_dim > 0:
             samples_dict["objfeats"] = samples[:, :, self.bbox_dim+self.class_dim:self.bbox_dim+self.class_dim+self.objfeat_dim]
 
+        # Get batch size from samples
+        batch_size = samples.shape[0]
+        
+        # DEBUG: Print objectness for debugging
+        print(f"\n[DEBUG delete_empty_from_network_samples] batch_size={batch_size}, max_boxes={samples.shape[1]}")
+        for b in range(min(batch_size, 3)):  # Print first 3 samples
+            objectness_vals = samples_dict['objectness'][b, :, -1].cpu().numpy()
+            end_positions = torch.where(samples_dict['objectness'][b, :, -1] > 0)[0]
+            first_end = end_positions[0].item() if len(end_positions) > 0 else samples.shape[1]
+            print(f"  Sample {b}: first END at position {first_end}")
+        
         #initilization
         boxes = {
-            "objectness": torch.zeros(1, 0, 1, device=device),
-            "class_labels": torch.zeros(1, 0, num_one_hot_classes, device=device), 
-            "translations": torch.zeros(1, 0, self.translation_dim, device=device),
-            "sizes": torch.zeros(1, 0, self.size_dim, device=device),
-            "angles": torch.zeros(1, 0, self.angle_dim, device=device)
+            "objectness": torch.zeros(batch_size, 0, 1, device=device),
+            "class_labels": torch.zeros(batch_size, 0, num_one_hot_classes, device=device), 
+            "translations": torch.zeros(batch_size, 0, self.translation_dim, device=device),
+            "sizes": torch.zeros(batch_size, 0, self.size_dim, device=device),
+            "angles": torch.zeros(batch_size, 0, self.angle_dim, device=device)
         }
         if self.objfeat_dim > 0:
-            boxes["objfeats"] =  torch.zeros(1, 0, self.objfeat_dim, device=device)
+            boxes["objfeats"] =  torch.zeros(batch_size, 0, self.objfeat_dim, device=device)
     
         max_boxes = samples.shape[1]
+        boxes_added = 0
         for i in range(max_boxes):
-            # Check if we have the end symbol 
+            # Check if we have the end symbol (only check first sample in batch for consistency)
             if not keep_empty and samples_dict['objectness'][0, i, -1] > 0:
+                print(f"  [DEBUG] Position {i}: Skipping ALL samples (sample 0 has END symbol)")
                 continue
             else:
+                boxes_added += 1
                 for k in samples_dict.keys():
                     if k == "class_labels":
                         # we output raw probability maps for visualization
@@ -391,6 +495,9 @@ class DiffusionSceneLayout_DDPM(Module):
                         boxes["objectness"] = torch.cat([ boxes["objectness"], samples[:, i:i+1, self.bbox_dim+self.class_dim-1:self.bbox_dim+self.class_dim].to(device) ], dim=1)
                     else:
                         boxes[k] = torch.cat([ boxes[k], samples_dict[k][:, i:i+1, :].to(device) ], dim=1)
+        
+        print(f"  [DEBUG] Total boxes added for ALL samples: {boxes_added}")
+        print(f"  [DEBUG] Final shape: {boxes['translations'].shape}\n")
 
         if self.objfeat_dim > 0:
             return {
@@ -462,6 +569,7 @@ def train_on_batch(model, optimizer, sample_params, config):
     # Make sure that everything has the correct size
     optimizer.zero_grad()
     # Compute the loss
+    # Call get_loss directly on model - DataParallelWithGetLoss will handle distribution
     loss, loss_dict = model.get_loss(sample_params)
     for k, v in loss_dict.items():
         StatsLogger.instance()[k].value = v.item()
@@ -481,6 +589,7 @@ def train_on_batch(model, optimizer, sample_params, config):
 @torch.no_grad()
 def validate_on_batch(model, sample_params, config):
     # Compute the loss
+    # Call get_loss directly on model - DataParallelWithGetLoss will handle distribution
     loss, loss_dict = model.get_loss(sample_params)
     for k, v in loss_dict.items():
         StatsLogger.instance()[k].value = v.item()

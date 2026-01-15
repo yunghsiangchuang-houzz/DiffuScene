@@ -1,5 +1,6 @@
 
 from math import ceil
+import os
 import numpy as np
 
 from functools import lru_cache
@@ -819,6 +820,338 @@ class Add_Text(DatasetDecoratorBase):
         return sample
 
 
+class Add_Text_Bathroom(DatasetDecoratorBase):
+    """
+    Bathroom-specific text description generator that:
+    1. Only describes FIXTURES (not architecture)
+    2. Explicitly counts all fixtures
+    3. Describes fixture-wall relationships (against wall)
+    4. Describes fixture-door relationships (not blocking door)
+    """
+    
+    FIXTURE_CLASSES = {"vanity", "toilet", "shower", "tub"}
+    ARCH_CLASSES = {"floor", "wall", "door", "window"}
+    
+    def __init__(self, dataset, eval=False, max_sentences=5, max_token_length=80):
+        super().__init__(dataset)
+        self.eval = eval
+        self.max_sentences = max_sentences
+        self.max_token_length = max_token_length
+        # self.glove = torchtext.vocab.GloVe(name="6B", dim=50, 
+        #     cache='/cluster/balrog/jtang/DiffuScene/.vector_cache')
+    
+    def __getitem__(self, idx):
+        sample = self._dataset[idx]
+        
+        # Separate fixtures from architecture
+        sample = self.separate_objects(sample)
+        
+        # Compute fixture-to-architecture relations
+        sample = self.compute_arch_relations(sample)
+        
+        # Generate bathroom-specific description
+        sample = self.add_bathroom_description(sample, idx)
+        
+        # Create embeddings
+        # sample = self.add_glove_embeddings(sample)
+        
+        # Clean up intermediate data
+        if 'fixture_indices' in sample:
+            del sample['fixture_indices']
+        if 'arch_indices' in sample:
+            del sample['arch_indices']
+        if 'wall_indices' in sample:
+            del sample['wall_indices']
+        if 'door_indices' in sample:
+            del sample['door_indices']
+        if 'obj_names' in sample:
+            del sample['obj_names']
+        if 'arch_relations' in sample:
+            del sample['arch_relations']
+            
+        return sample
+    
+    def separate_objects(self, sample):
+        """Separate fixture indices from architecture indices."""
+        classes = self.class_labels
+        class_index = sample['class_labels'].argmax(-1)
+        
+        # Map modified class indices (after Diffusion wrapper) back to original class indices
+        # Diffusion removes column C-2 (second-to-last), so:
+        # - Modified indices 0 to C-3 map to original classes 0 to C-3
+        # - Modified index C-2 maps to original class C-1 (last class)
+        original_n_classes = len(classes)
+        modified_n_classes = sample['class_labels'].shape[-1]
+        
+        # Create mapping from modified index to original index
+        def map_to_original(mod_idx):
+            if mod_idx < original_n_classes - 2:
+                return mod_idx
+            else:  # mod_idx == original_n_classes - 2
+                return original_n_classes - 1
+        
+        obj_names = [classes[map_to_original(ind)] for ind in class_index]
+        
+        fixture_indices = []
+        arch_indices = []
+        wall_indices = []
+        door_indices = []
+        
+        for i, name in enumerate(obj_names):
+            if name in self.FIXTURE_CLASSES:
+                fixture_indices.append(i)
+            elif name in self.ARCH_CLASSES:
+                arch_indices.append(i)
+                if name == "wall":
+                    wall_indices.append(i)
+                elif name == "door":
+                    door_indices.append(i)
+        
+        sample['fixture_indices'] = fixture_indices
+        sample['arch_indices'] = arch_indices
+        sample['wall_indices'] = wall_indices
+        sample['door_indices'] = door_indices
+        sample['obj_names'] = obj_names
+        
+        return sample
+    
+    def compute_arch_relations(self, sample):
+        """Compute relations between fixtures and architecture (walls, doors)."""
+        arch_relations = {}
+        
+        for fix_idx in sample['fixture_indices']:
+            fix_trans = sample['translations'][fix_idx]
+            fix_sizes = sample['sizes'][fix_idx]
+            fix_box = self._get_box(fix_trans, fix_sizes)
+            
+            # Check against walls
+            wall_relations = []
+            for wall_idx in sample['wall_indices']:
+                wall_trans = sample['translations'][wall_idx]
+                wall_sizes = sample['sizes'][wall_idx]
+                wall_box = self._get_box(wall_trans, wall_sizes)
+                
+                if self._is_against_wall(fix_box, wall_box):
+                    wall_relations.append("against wall")
+                    break
+            
+            # Check against doors
+            door_relations = []
+            for door_idx in sample['door_indices']:
+                door_trans = sample['translations'][door_idx]
+                door_sizes = sample['sizes'][door_idx]
+                door_box = self._get_box(door_trans, door_sizes)
+                
+                blocking, relation = self._check_door_relation(fix_box, door_box)
+                if blocking:
+                    door_relations.append("blocks door")
+                elif relation:
+                    door_relations.append(relation)
+            
+            arch_relations[fix_idx] = {
+                'wall': wall_relations,
+                'door': door_relations
+            }
+        
+        sample['arch_relations'] = arch_relations
+        return sample
+    
+    def _get_box(self, trans, sizes):
+        """Convert translation and sizes to box dict."""
+        return {
+            'min': list(trans - sizes),
+            'max': list(trans + sizes),
+            'center': list(trans)
+        }
+    
+    def _is_against_wall(self, fix_box, wall_box, threshold=0.3):
+        """Check if fixture is against a wall (within threshold distance)."""
+        # Check X-axis alignment
+        x_near = (abs(fix_box['min'][0] - wall_box['max'][0]) < threshold or
+                  abs(fix_box['max'][0] - wall_box['min'][0]) < threshold)
+        # Check Z-axis alignment  
+        z_near = (abs(fix_box['min'][2] - wall_box['max'][2]) < threshold or
+                  abs(fix_box['max'][2] - wall_box['min'][2]) < threshold)
+        
+        # Check if they overlap in the perpendicular axis
+        if x_near:
+            z_overlap = not (fix_box['max'][2] < wall_box['min'][2] or 
+                           fix_box['min'][2] > wall_box['max'][2])
+            return z_overlap
+        if z_near:
+            x_overlap = not (fix_box['max'][0] < wall_box['min'][0] or 
+                           fix_box['min'][0] > wall_box['max'][0])
+            return x_overlap
+        
+        return False
+    
+    def _check_door_relation(self, fix_box, door_box, block_threshold=0.5, away_threshold=1.5):
+        """Check if fixture blocks door or is away from door."""
+        # Calculate distance between centers
+        dx = fix_box['center'][0] - door_box['center'][0]
+        dz = fix_box['center'][2] - door_box['center'][2]
+        distance = np.sqrt(dx**2 + dz**2)
+        
+        # Check for blocking (overlapping or very close in door swing area)
+        x_overlap = not (fix_box['max'][0] < door_box['min'][0] or 
+                        fix_box['min'][0] > door_box['max'][0])
+        z_overlap = not (fix_box['max'][2] < door_box['min'][2] or 
+                        fix_box['min'][2] > door_box['max'][2])
+        
+        if x_overlap and z_overlap:
+            return True, None  # Blocking
+        
+        if distance < block_threshold:
+            return True, None  # Too close, blocking
+        
+        if distance > away_threshold:
+            return False, "away from door"
+        
+        return False, None
+    
+    def add_bathroom_description(self, sample, idx=None):
+        """Generate bathroom-specific description focusing on fixtures."""
+        sentences = []
+        obj_names = sample['obj_names']
+        arch_relations = sample['arch_relations']
+        
+        # Count ONLY fixtures
+        fixture_names = [obj_names[i] for i in sample['fixture_indices']]
+        fixture_counts = Counter(fixture_names)
+        
+        # Sentence 1: Explicit fixture count (CRITICAL for control)
+        if len(fixture_counts) == 0:
+            s = "The bathroom has no fixtures. "
+        else:
+            s = "The bathroom has "
+            fixture_parts = []
+            for fixture in ["vanity", "toilet", "shower", "tub"]:  # Fixed order
+                if fixture in fixture_counts:
+                    count = fixture_counts[fixture]
+                    if count == 1:
+                        fixture_parts.append(f"one {fixture}")
+                    elif count == 2:
+                        fixture_parts.append(f"two {fixture}s")
+                    else:
+                        fixture_parts.append(f"{num2words(count)} {fixture}s")
+            
+            if len(fixture_parts) == 1:
+                s += fixture_parts[0]
+            elif len(fixture_parts) == 2:
+                s += f"{fixture_parts[0]} and {fixture_parts[1]}"
+            else:
+                s += ", ".join(fixture_parts[:-1]) + f", and {fixture_parts[-1]}"
+            s += ". "
+        
+        sentences.append(s)
+        
+        # # Sentence 2: Explicit "only fixtures" instruction
+        # s = "Only fixtures are placed. "
+        # sentences.append(s)
+        
+        ## Sentence 3+: Wall relationships for fixtures
+        # fixtures_against_wall = []
+        
+        # for fix_idx in sample['fixture_indices']:
+        #     name = obj_names[fix_idx]
+        #     if arch_relations[fix_idx]['wall']:
+        #         fixtures_against_wall.append(name)
+        
+        # if fixtures_against_wall:
+        #     wall_counts = Counter(fixtures_against_wall)
+        #     parts = []
+        #     for name, count in wall_counts.items():
+        #         if count == 1:
+        #             parts.append(f"the {name}")
+        #         else:
+        #             parts.append(f"the {name}s")
+            
+        #     if len(parts) == 1:
+        #         s = f"{parts[0].capitalize()} is against the wall. "
+        #     else:
+        #         s = f"{', '.join(parts[:-1])} and {parts[-1]} are against the wall. "
+        #     sentences.append(s)
+        
+        # # Sentence 4: Door clearance
+        # fixtures_blocking_door = []
+        
+        # for fix_idx in sample['fixture_indices']:
+        #     name = obj_names[fix_idx]
+        #     door_rels = arch_relations[fix_idx]['door']
+        #     if "blocks door" in door_rels:
+        #         fixtures_blocking_door.append(name)
+        
+        # if not fixtures_blocking_door and len(sample['door_indices']) > 0:
+        #     s = "Fixtures do not block the door. "
+        #     sentences.append(s)
+        
+        # Convert list of sentences to a single string (consistent with Add_Text)
+        description = ' '.join(sentences)
+        sample['description'] = description
+
+        # Save description to description.txt in the training data folder
+        if idx is not None:
+            curr = self._dataset
+            while curr is not None:
+                if hasattr(curr, "_path_to_rooms"):
+                    scan_dir = os.path.dirname(curr._path_to_rooms[idx])
+                    # Handle 3d_front_format mapping:
+                    # from data/.../3d_front_format/HOUSE_ID_simple_design_filtered/
+                    # to   data/.../HOUSE_ID/
+                    if "3d_front_format" in scan_dir:
+                        parent_dir = os.path.dirname(os.path.dirname(scan_dir))
+                        dir_name = os.path.basename(scan_dir).replace("_simple_design_filtered", "")
+                        target_dir = os.path.join(parent_dir, dir_name)
+                    else:
+                        target_dir = scan_dir
+
+                    if os.path.exists(target_dir):
+                        desc_path = os.path.join(target_dir, "description.txt")
+                        # Always write to ensure they are created
+                        with open(desc_path, "w") as f:
+                            f.write(description)
+                        # print(f"Saved description to {desc_path}")
+                    break
+                
+                if hasattr(curr, "_dataset"):
+                    curr = curr._dataset
+                elif hasattr(curr, "_datasets"):
+                    curr = curr._datasets[0]
+                elif hasattr(curr, "scenes"):
+                    scene = curr.scenes[idx]
+                    if hasattr(scene, "path_to_room_mask") and scene.path_to_room_mask:
+                        scan_dir = os.path.dirname(scene.path_to_room_mask)
+                        desc_path = os.path.join(scan_dir, "description.txt")
+                        if not os.path.exists(desc_path):
+                            with open(desc_path, "w") as f:
+                                f.write(description)
+                    break
+                else:
+                    curr = None
+
+        return sample
+    
+    # def add_glove_embeddings(self, sample):
+    #     """Create embeddings from description."""
+    #     sentence = ' '.join(sample['description'][:self.max_sentences])
+    #     sample['description'] = sentence
+    #     tokens = list(word_tokenize(sentence))
+        
+    #     # Truncate if too long
+    #     if len(tokens) > self.max_token_length:
+    #         tokens = tokens[:self.max_token_length]
+        
+    #     # Pad to maximum length
+    #     tokens += ['<pad>'] * (self.max_token_length - len(tokens))
+        
+    #     # Embed words
+    #     sample['desc_emb'] = torch.cat(
+    #         [self.glove[token].unsqueeze(0) for token in tokens]
+    #     ).numpy()
+        
+    #     return sample
+
+
 class Autoregressive(DatasetDecoratorBase):
     def __getitem__(self, idx):
         sample_params = self._dataset[idx]
@@ -932,7 +1265,7 @@ class Diffusion(DatasetDecoratorBase):
         '''
     
         samples = list(filter(lambda x: x is not None, samples))
-        return dataloader.default_collate(samples)
+        return DatasetCollection.collate_fn(samples)
 
     @property
     def bbox_dims(self):
@@ -1015,7 +1348,13 @@ def dataset_encoding_factory(
                 print("Applying jittering augmentations")
                 dataset_collection = Jitter(dataset_collection)
 
-    if "textfix" in name:
+    if "textfix_bathroom" in name:
+        print("add bathroom text for evaluation")
+        dataset_collection = Add_Text_Bathroom(dataset_collection, eval=True)
+    elif "text_bathroom" in name:
+        print("add bathroom text for training")
+        dataset_collection = Add_Text_Bathroom(dataset_collection, eval=False)
+    elif "textfix" in name:
         print("add text into input dict for evalation")
         dataset_collection = Add_Text(dataset_collection, eval=True)
     elif "text" in name:

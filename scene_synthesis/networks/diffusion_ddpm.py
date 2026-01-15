@@ -616,7 +616,7 @@ class GaussianDiffusion:
                     else:
                         obj_recon = x_recon[:, :, self.bbox_dim+self.class_dim-1:self.bbox_dim+self.class_dim]
                         valid_mask = (obj_recon <=0).float().squeeze(2)
-
+ 
                     # descale bounding box to world coordinate system
                     descale_trans = self.descale_to_origin( trans_recon, self._centroids_min.to(data_start.device), self._centroids_max.to(data_start.device) )
                     descale_sizes = self.descale_to_origin( sizes_recon, self._sizes_min.to(data_start.device), self._sizes_max.to(data_start.device) )
@@ -625,13 +625,17 @@ class GaussianDiffusion:
                     assert axis_aligned_bbox_corn.shape[-1] == 6
                     # compute iou
                     bbox_iou = axis_aligned_bbox_overlaps_3d(axis_aligned_bbox_corn, axis_aligned_bbox_corn)
-                    bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :]
+                    # Exclude diagonal (self-overlap) from IOU calculation
+                    # eye_mask = 1 - torch.eye(bbox_iou.shape[1], device=bbox_iou.device)[None, :, :]
+                    bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :] * eye_mask
+                    # bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :]
                     bbox_iou_valid = bbox_iou * bbox_iou_mask
                     bbox_iou_valid_avg = bbox_iou_valid.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
                     # get the iou loss weight w.r.t time
                     w_iou = self._extract(self.alphas_cumprod.to(data_start.device), t, bbox_iou.shape)
                     loss_iou = (w_iou * 0.1 * bbox_iou).mean(dim=list(range(1, len(w_iou.shape))))
                     loss_iou_valid_avg = (w_iou * 0.1 * bbox_iou_valid).sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
+                    # loss_iou_valid_avg = (w_iou * bbox_iou_valid).sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
                     losses_weight += loss_iou_valid_avg
                 else:
                     loss_iou = torch.zeros(B).to(data_start.device)

@@ -120,6 +120,7 @@ class WandB(StatsLogger):
         }
         values[prefix+"loss"] = self._loss.value
         values[prefix+"epoch"] = self._epoch
-        wandb.log(values)
+        # Use epoch as step to align multiple runs by epoch instead of starting from 0
+        wandb.log(values, step=self._epoch)
 
         super().clear()

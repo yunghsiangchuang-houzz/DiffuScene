@@ -62,7 +62,7 @@ def yield_forever(iterator):
 def load_checkpoints(model, optimizer, experiment_directory, args, device):
     model_files = [
         f for f in os.listdir(experiment_directory)
-        if f.startswith("model_")
+        if f.startswith("model_") and f != "model_best"
     ]
     if len(model_files) == 0:
         return
@@ -78,7 +78,34 @@ def load_checkpoints(model, optimizer, experiment_directory, args, device):
         return
 
     print("Loading model checkpoint from {}".format(model_path))
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    checkpoint_state_dict = torch.load(model_path, map_location=device)
+    
+    # Handle DataParallel prefix mismatch
+    # Check if model is wrapped in DataParallel (has "module." prefix)
+    model_keys = list(model.state_dict().keys())
+    checkpoint_keys = list(checkpoint_state_dict.keys())
+    
+    model_has_module_prefix = any(k.startswith('module.') for k in model_keys)
+    checkpoint_has_module_prefix = any(k.startswith('module.') for k in checkpoint_keys)
+    
+    # Adjust checkpoint keys to match model structure
+    if model_has_module_prefix and not checkpoint_has_module_prefix:
+        # Model expects "module." prefix but checkpoint doesn't have it
+        new_checkpoint_state_dict = {}
+        for k, v in checkpoint_state_dict.items():
+            new_checkpoint_state_dict['module.' + k] = v
+        checkpoint_state_dict = new_checkpoint_state_dict
+    elif not model_has_module_prefix and checkpoint_has_module_prefix:
+        # Model doesn't expect "module." prefix but checkpoint has it
+        new_checkpoint_state_dict = {}
+        for k, v in checkpoint_state_dict.items():
+            if k.startswith('module.'):
+                new_checkpoint_state_dict[k[7:]] = v  # Remove "module." prefix
+            else:
+                new_checkpoint_state_dict[k] = v
+        checkpoint_state_dict = new_checkpoint_state_dict
+    
+    model.load_state_dict(checkpoint_state_dict, strict=False)
     print("Loading optimizer checkpoint from {}".format(opt_path))
     optimizer.load_state_dict(
         torch.load(opt_path, map_location=device)
