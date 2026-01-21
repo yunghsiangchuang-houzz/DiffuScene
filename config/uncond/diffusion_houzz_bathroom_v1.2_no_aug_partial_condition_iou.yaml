@@ -1,0 +1,96 @@
+data:
+    dataset_type: "cached_threed_front"
+    encoding_type: "cached_diffusion_cosin_angle_wocm"
+    dataset_directory: "../data/bathroom_2.2k_filter/3d_front_format"
+    annotation_file: "../config/houzz_bathroom_splits_v1.2.csv"
+    # augmentations: ["fixed_rotations"]
+    train_stats: "dataset_stats.txt"
+    room_layout_size: "64,64"
+    max_length: 50
+    filter_fn: "no_filtering"
+
+network:
+    type: "diffusion_scene_layout_ddpm"
+    net_type: "unet1d"
+    point_dim: 17
+    latent_dim: 0
+    room_mask_condition: false
+    # Partial condition settings
+    room_partial_condition: true
+    partial_condition_iou: true  # Enable class-aware IoU loss
+    partial_num_points: 40
+    # Other dims
+    objectness_dim: 0
+    objfeat_dim: 0
+    class_dim: 9
+    angle_dim: 2 # cos/sin encoding
+    sample_num_points: 50
+    
+    # Instance condition
+    learnable_embedding: true
+    instance_condition: true
+    instance_emb_dim: 128
+    
+    # diffusion config
+    diffusion_kwargs:
+        schedule_type: 'linear'
+        beta_start: 0.0001
+        beta_end: 0.02
+        time_num: 1000 
+        loss_type: 'mse'
+        model_mean_type: 'v' #'eps'
+        model_var_type: 'fixedsmall'
+        loss_separate: true
+        loss_iou: true
+        train_stats_file: ../data/bathroom_2.2k_filter/3d_front_format/dataset_stats.txt
+
+
+    net_kwargs:
+        dim: 512
+        dim_mults: [1, 1, 1, 1]
+        channels: 17 
+        objectness_dim: 0
+        class_dim: 9
+        angle_dim: 2
+        objfeat_dim: 0
+        context_dim: 64
+        instanclass_dim: 128 
+        seperate_all: true  
+
+feature_extractor:
+    name: "resnet18"
+    feature_size: 64
+    freeze_bn: true
+    input_channels: 1
+
+training:
+    splits: ["train"]
+    epochs: 60000
+    steps_per_epoch: 500
+    batch_size: 256
+    save_frequency: 100
+    max_grad_norm: 10
+    # optimizer
+    optimizer: Adam
+    weight_decay: 0.0
+    # schedule
+    schedule: 'step'
+    lr: 0.0002
+    lr_step: 20000
+    lr_decay: 0.5
+    
+
+validation:
+    splits: ["val"]
+    frequency: 10
+    batch_size: 128
+    gen_traj: false
+    num_step: 100
+    gen_gt: false
+    gen_prob_map: false
+
+
+logger:
+    project: "houzz_bathroom_v1.2_no_aug_partial_condition_iou"
+    platform: "wandb"
+

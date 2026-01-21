@@ -152,6 +152,16 @@ class GaussianDiffusion:
 
         self.room_partial_condition = config.get("room_partial_condition", False)
         self.room_arrange_condition = config.get("room_arrange_condition", False)
+        
+        # Class-aware IoU loss for partial scene completion
+        # When True, uses different IoU treatment based on object class pairs:
+        # - Collision (penalize): fixture↔fixture, fixture↔wall/door/window, door↔window
+        # - Containment (encourage): floor↔everything
+        # - Embedding (encourage): wall↔door/window
+        # Class order expected: 0=vanity, 1=toilet, 2=shower, 3=tub, 4=floor, 5=wall, 6=door, 7=window
+        self.partial_condition_iou = config.get("partial_condition_iou", False)
+        if self.partial_condition_iou:
+            print('Using class-aware IoU loss for partial scene completion')
 
         self.loss_type = loss_type
         self.model_mean_type = model_mean_type
@@ -626,22 +636,102 @@ class GaussianDiffusion:
                     # compute iou
                     bbox_iou = axis_aligned_bbox_overlaps_3d(axis_aligned_bbox_corn, axis_aligned_bbox_corn)
                     # Exclude diagonal (self-overlap) from IOU calculation
-                    # eye_mask = 1 - torch.eye(bbox_iou.shape[1], device=bbox_iou.device)[None, :, :]
-                    bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :] * eye_mask
-                    # bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :]
-                    bbox_iou_valid = bbox_iou * bbox_iou_mask
-                    bbox_iou_valid_avg = bbox_iou_valid.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
-                    # get the iou loss weight w.r.t time
-                    w_iou = self._extract(self.alphas_cumprod.to(data_start.device), t, bbox_iou.shape)
-                    loss_iou = (w_iou * 0.1 * bbox_iou).mean(dim=list(range(1, len(w_iou.shape))))
-                    loss_iou_valid_avg = (w_iou * 0.1 * bbox_iou_valid).sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
-                    # loss_iou_valid_avg = (w_iou * bbox_iou_valid).sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) / ( bbox_iou_mask.sum( dim=list(range(1, len(bbox_iou_valid.shape))) ) + 1e-6)
+                    eye_mask = 1 - torch.eye(bbox_iou.shape[1], device=bbox_iou.device)[None, :, :]
+                    
+                    if self.partial_condition_iou:
+                        # Class-aware IoU loss for partial scene completion
+                        # Classes: 0=vanity, 1=toilet, 2=shower, 3=tub, 4=floor, 5=wall, 6=door, 7=window
+                        
+                        # Get class predictions from reconstructed x
+                        class_logits = x_recon[:, :, self.bbox_dim:self.bbox_dim+self.class_dim]
+                        class_pred = class_logits.argmax(dim=-1)  # [B, N]
+                        
+                        # Define class masks [B, N]
+                        is_fixture = (class_pred <= 3)  # vanity, toilet, shower, tub
+                        is_floor = (class_pred == 4)
+                        is_wall = (class_pred == 5)
+                        is_door = (class_pred == 6)
+                        is_window = (class_pred == 7)
+                        
+                        # === COLLISION MASK (penalize overlap) ===
+                        # fixture ↔ fixture
+                        fixture_fixture = is_fixture[:, :, None] & is_fixture[:, None, :]
+                        # fixture ↔ wall/door/window
+                        fixture_wall = (is_fixture[:, :, None] & is_wall[:, None, :]) | (is_wall[:, :, None] & is_fixture[:, None, :])
+                        fixture_door = (is_fixture[:, :, None] & is_door[:, None, :]) | (is_door[:, :, None] & is_fixture[:, None, :])
+                        fixture_window = (is_fixture[:, :, None] & is_window[:, None, :]) | (is_window[:, :, None] & is_fixture[:, None, :])
+                        # door ↔ window
+                        door_window = (is_door[:, :, None] & is_window[:, None, :]) | (is_window[:, :, None] & is_door[:, None, :])
+                        
+                        collision_mask = (fixture_fixture | fixture_wall | fixture_door | fixture_window | door_window).float()
+                        collision_mask = collision_mask * eye_mask * valid_mask[:, :, None] * valid_mask[:, None, :]
+                        
+                        # === CONTAINMENT MASK (encourage overlap with floor) ===
+                        # floor ↔ anything (objects should be inside floor)
+                        floor_other = (is_floor[:, :, None] & ~is_floor[:, None, :]) | (~is_floor[:, :, None] & is_floor[:, None, :])
+                        containment_mask = floor_other.float() * eye_mask * valid_mask[:, :, None] * valid_mask[:, None, :]
+                        
+                        # === EMBEDDING MASK (encourage door/window in wall) ===
+                        wall_door = (is_wall[:, :, None] & is_door[:, None, :]) | (is_door[:, :, None] & is_wall[:, None, :])
+                        wall_window = (is_wall[:, :, None] & is_window[:, None, :]) | (is_window[:, :, None] & is_wall[:, None, :])
+                        embedding_mask = (wall_door | wall_window).float() * eye_mask * valid_mask[:, :, None] * valid_mask[:, None, :]
+                        
+                        # === COMPUTE LOSSES ===
+                        # Collision loss: minimize IoU
+                        collision_iou = bbox_iou * collision_mask
+                        collision_count = collision_mask.sum(dim=[1, 2]) + 1e-6
+                        loss_collision = collision_iou.sum(dim=[1, 2]) / collision_count
+                        
+                        # Containment loss: maximize IoU → minimize (1 - IoU)
+                        # Note: standard IoU may underestimate containment when floor >> fixture
+                        containment_iou = bbox_iou * containment_mask
+                        containment_count = containment_mask.sum(dim=[1, 2]) + 1e-6
+                        avg_containment_iou = containment_iou.sum(dim=[1, 2]) / containment_count
+                        loss_containment = 1.0 - avg_containment_iou
+                        
+                        # Embedding loss: maximize IoU for door/window in wall
+                        embedding_iou = bbox_iou * embedding_mask
+                        embedding_count = embedding_mask.sum(dim=[1, 2]) + 1e-6
+                        avg_embedding_iou = embedding_iou.sum(dim=[1, 2]) / embedding_count
+                        loss_embedding = 1.0 - avg_embedding_iou
+                        
+                        # Time weighting (αₜ from DDPM)
+                        w_iou = self._extract(self.alphas_cumprod.to(data_start.device), t, loss_collision.shape)
+                        
+                        # Combine losses with coefficient 0.1 as in original paper
+                        # Note: containment and embedding losses have same weight as collision
+                        # loss_iou_valid_avg = w_iou.squeeze() * 0.1 * (lossss_collision + loss_containment + loss_embedding)
+                        loss_iou_valid_avg = w_iou.squeeze() * 0.1 * loss_collision
+
+                        # For logging: use collision IoU as the main metric
+                        bbox_iou_valid = collision_iou
+                        bbox_iou_valid_avg = loss_collision
+                        loss_iou = loss_collision  # for compatibility
+                        
+                        # Store additional metrics for logging
+                        loss_containment_avg = loss_containment
+                        loss_embedding_avg = loss_embedding
+                    else:
+                        # Original IoU loss (all pairs treated equally, includes self-overlap)
+                        bbox_iou_mask = valid_mask[:, :, None] * valid_mask[:, None, :]
+                        bbox_iou_valid = bbox_iou * bbox_iou_mask
+                        bbox_iou_valid_avg = bbox_iou_valid.sum(dim=[1, 2]) / (bbox_iou_mask.sum(dim=[1, 2]) + 1e-6)
+                        # get the iou loss weight w.r.t time
+                        w_iou = self._extract(self.alphas_cumprod.to(data_start.device), t, bbox_iou.shape)
+                        loss_iou = (w_iou * 0.1 * bbox_iou).mean(dim=list(range(1, len(w_iou.shape))))
+                        loss_iou_valid_avg = (w_iou * 0.1 * bbox_iou_valid).sum(dim=[1, 2]) / (bbox_iou_mask.sum(dim=[1, 2]) + 1e-6)
+                        # Set placeholder values for class-aware losses
+                        loss_containment_avg = torch.zeros(B).to(data_start.device)
+                        loss_embedding_avg = torch.zeros(B).to(data_start.device)
+                    
                     losses_weight += loss_iou_valid_avg
                 else:
                     loss_iou = torch.zeros(B).to(data_start.device)
                     bbox_iou = torch.zeros(B).to(data_start.device)
                     loss_iou_valid_avg = torch.zeros(B).to(data_start.device)
                     bbox_iou_valid_avg = torch.zeros(B).to(data_start.device)
+                    loss_containment_avg = torch.zeros(B).to(data_start.device)
+                    loss_embedding_avg = torch.zeros(B).to(data_start.device)
                     
                 return losses_weight, {
                     'loss.bbox': loss_bbox.mean(),
@@ -652,7 +742,9 @@ class GaussianDiffusion:
                     'loss.object': loss_object.mean(),
                     'loss.objfeat': loss_objfeat.mean(),
                     'loss.liou': loss_iou_valid_avg.mean(), 
-                    'loss.bbox_iou': bbox_iou_valid_avg.mean(), 
+                    'loss.bbox_iou': bbox_iou_valid_avg.mean(),
+                    'loss.containment': loss_containment_avg.mean(),
+                    'loss.embedding': loss_embedding_avg.mean(),
                 }
             else:
                 print('unimplement point dim is: ', data_start.shape[-1])

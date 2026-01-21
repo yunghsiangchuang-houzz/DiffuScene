@@ -118,8 +118,11 @@ def main(argv):
         filter_fn=filter_function(
             config["data"],
             split=["test"]
+            # split=["train"]
+
         ),
         split=["test"]
+        # split=["train"]
     )
 
 
