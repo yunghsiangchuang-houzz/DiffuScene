@@ -83,6 +83,11 @@ def main(argv):
         help="Total batch size for inference. Processes floor(batch_size/n_samples) scenes per batch. "
              "E.g., --batch_size=128 --n_samples=6 -> 21 scenes x 6 samples = 126 per inference"
     )
+    parser.add_argument(
+        "--inference_split",
+        default="test",
+        help="The split to be used for inference"
+    )
 
     args = parser.parse_args(argv)
 
@@ -117,12 +122,10 @@ def main(argv):
         config["data"],
         filter_fn=filter_function(
             config["data"],
-            split=["test"]
-            # split=["train"]
+            split=[args.inference_split]
 
         ),
-        split=["test"]
-        # split=["train"]
+        split=[args.inference_split]
     )
 
 
