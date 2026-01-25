@@ -14,6 +14,7 @@ from einops import rearrange, reduce
 from functools import partial
 from collections import namedtuple
 from .loss import axis_aligned_bbox_overlaps_3d
+from .diffusion_ddpm_physcene import GaussianDiffusionPhyScene
 
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
@@ -124,6 +125,7 @@ def discretized_gaussian_log_likelihood(x, *, means, log_scales):
 
 class GaussianDiffusion:
     def __init__(self, config, betas, loss_type, model_mean_type, model_var_type, loss_separate, loss_iou, train_stats_file):
+        self.physcene = GaussianDiffusionPhyScene(self)
         # read object property dimension
         self.objectness_dim = config.get("objectness_dim", 1)
         self.class_dim = config.get("class_dim", 21)
@@ -154,10 +156,6 @@ class GaussianDiffusion:
         self.room_arrange_condition = config.get("room_arrange_condition", False)
         
         # Class-aware IoU loss for partial scene completion
-        # When True, uses different IoU treatment based on object class pairs:
-        # - Collision (penalize): fixture↔fixture, fixture↔wall/door/window, door↔window
-        # - Containment (encourage): floor↔everything
-        # - Embedding (encourage): wall↔door/window
         # Class order expected: 0=vanity, 1=toilet, 2=shower, 3=tub, 4=floor, 5=wall, 6=door, 7=window
         self.partial_condition_iou = config.get("partial_condition_iou", False)
         self.exclude_self_iou = config.get("exclude_self_iou", False)
@@ -900,10 +898,22 @@ class DiffusionPoint(nn.Module):
                                             clip_denoised=clip_denoised, sampling_timesteps=sampling_timesteps, ddim_sampling_eta=ddim_sampling_eta, return_all_timesteps=return_all_timesteps)
     
     def complete_samples(self, shape, device, condition=None, condition_cross=None, noise_fn=torch.randn,
-                    clip_denoised=True, keep_running=False, partial_boxes=None):
-        return self.diffusion.p_sample_loop_complete(self._denoise, shape=shape, device=device, condition=condition, condition_cross=condition_cross, noise_fn=noise_fn,
+                    clip_denoised=True, keep_running=False, partial_boxes=None, dual_path_compare=True):
+        """
+        Complete samples based on partial boxes.
+        
+        Args:
+            dual_path_compare: If True, returns (img_baseline, img_physcene) tuple for fair comparison.
+                               Both paths use the same shared noise at each step.
+                               If False, returns only the PhyScene result.
+        """
+        # return self.diffusion.p_sample_loop_complete(self._denoise, shape=shape, device=device, condition=condition, condition_cross=condition_cross, noise_fn=noise_fn,
+        #                                     clip_denoised=clip_denoised,
+        #                                     keep_running=keep_running, partial_boxes=partial_boxes)
+        return self.diffusion.physcene.p_sample_loop_complete(self._denoise, shape=shape, device=device, condition=condition, condition_cross=condition_cross, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
-                                            keep_running=keep_running, partial_boxes=partial_boxes)
+                                            keep_running=keep_running, partial_boxes=partial_boxes,
+                                            dual_path_compare=dual_path_compare)
 
     def arrange_samples(self, shape, device, condition=None, condition_cross=None, noise_fn=torch.randn,
                     clip_denoised=True, keep_running=False, input_boxes=None):

@@ -303,8 +303,8 @@ class DiffusionSceneLayout_DDPM(Module):
         return loss, loss_dict
 
     def sample(self, room_mask, num_points, point_dim, batch_size=1, text=None, 
-               partial_boxes=None, input_boxes=None, ret_traj=False, ddim=False, clip_denoised=False, freq=40, batch_seeds=None, 
-                ):
+               partial_boxes=None, input_boxes=None, ret_traj=False, ddim=False, clip_denoised=False, freq=40, batch_seeds=None,
+               dual_path_compare=False):
         device = room_mask.device
         
         # Generate seeded noise for reproducibility
@@ -387,7 +387,7 @@ class DiffusionSceneLayout_DDPM(Module):
 
         elif partial_boxes is not None:
             print('scene completion sampling')
-            samples = self.diffusion.complete_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes)
+            samples = self.diffusion.complete_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes, dual_path_compare=dual_path_compare)
 
         else:
             print('unconditional / conditional generation sampling')
@@ -423,11 +423,24 @@ class DiffusionSceneLayout_DDPM(Module):
         return boxes_traj
     
     @torch.no_grad()
-    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, text=None, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False):
+    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, text=None, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False, dual_path_compare=False):
+        """
+        Complete scene from partial boxes.
         
-        samples = self.sample(room_mask, num_points, point_dim, batch_size, text=text, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds)
+        Args:
+            dual_path_compare: If True, returns (bbox_params_baseline, bbox_params_physcene) for comparison.
+                               Both use identical noise for fair comparison.
+        """
+        samples = self.sample(room_mask, num_points, point_dim, batch_size, text=text, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds, dual_path_compare=dual_path_compare)
 
-        return self.delete_empty_from_network_samples(samples, device=device, keep_empty=keep_empty)
+        if dual_path_compare:
+            samples_baseline, samples_physcene = samples
+            return (
+                self.delete_empty_from_network_samples(samples_baseline, device=device, keep_empty=keep_empty),
+                self.delete_empty_from_network_samples(samples_physcene, device=device, keep_empty=keep_empty)
+            )
+        else:
+            return self.delete_empty_from_network_samples(samples, device=device, keep_empty=keep_empty)
     
     @torch.no_grad()
     def arrange_scene(self, room_mask, num_points, point_dim, input_boxes, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False):

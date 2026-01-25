@@ -1,7 +1,7 @@
 #!/bin/bash
 cd ./scripts
 
-exp_dir="output/houzz_bathroom_v1.2_no_aug_fixed_iou/generated_results_model_test_set_best"
+exp_dir="output/houzz_bathroom_v1.2_no_aug_fixed_iou/generated_results_model_test_set_physcene_best"
 config="../config/uncond/diffusion_houzz_bathroom_v1.2_no_aug_fixed_iou.yaml"
 exp_name="houzz_bathroom_v1.2_no_aug_fixed_iou"
 weight_file="../output/houzz_bathroom_v1.2_no_aug_fixed_iou/houzz_bathroom_v1.2_no_aug_fixed_iou/model_best"
