@@ -304,7 +304,7 @@ class DiffusionSceneLayout_DDPM(Module):
 
     def sample(self, room_mask, num_points, point_dim, batch_size=1, text=None, 
                partial_boxes=None, input_boxes=None, ret_traj=False, ddim=False, clip_denoised=False, freq=40, batch_seeds=None,
-               dual_path_compare=False):
+               dual_path_compare=False, noise_cache=None):
         device = room_mask.device
         
         # Generate seeded noise for reproducibility
@@ -387,7 +387,7 @@ class DiffusionSceneLayout_DDPM(Module):
 
         elif partial_boxes is not None:
             print('scene completion sampling')
-            samples = self.diffusion.complete_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes, dual_path_compare=dual_path_compare)
+            samples = self.diffusion.complete_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes, dual_path_compare=dual_path_compare, noise_cache=noise_cache)
 
         else:
             print('unconditional / conditional generation sampling')
@@ -423,15 +423,17 @@ class DiffusionSceneLayout_DDPM(Module):
         return boxes_traj
     
     @torch.no_grad()
-    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, text=None, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False, dual_path_compare=False):
+    def complete_scene(self, room_mask, num_points, point_dim, partial_boxes, text=None, batch_size=1, ret_traj=False, ddim=False, clip_denoised=False, batch_seeds=None, device="cpu", keep_empty=False, dual_path_compare=False, noise_cache=None):
         """
         Complete scene from partial boxes.
         
         Args:
             dual_path_compare: If True, returns (bbox_params_baseline, bbox_params_physcene) for comparison.
                                Both use identical noise for fair comparison.
+            noise_cache: Optional DiffusionNoiseCache for deterministic sampling across checkpoints.
+                         Use this when comparing multiple checkpoints with identical noise.
         """
-        samples = self.sample(room_mask, num_points, point_dim, batch_size, text=text, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds, dual_path_compare=dual_path_compare)
+        samples = self.sample(room_mask, num_points, point_dim, batch_size, text=text, partial_boxes=partial_boxes, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds, dual_path_compare=dual_path_compare, noise_cache=noise_cache)
 
         if dual_path_compare:
             samples_baseline, samples_physcene = samples
@@ -529,6 +531,7 @@ class DiffusionSceneLayout_DDPM(Module):
                 "sizes": boxes["sizes"].to("cpu"),
                 "angles": boxes["angles"].to("cpu")
             }
+
 
 
     @torch.no_grad()

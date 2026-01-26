@@ -898,7 +898,7 @@ class DiffusionPoint(nn.Module):
                                             clip_denoised=clip_denoised, sampling_timesteps=sampling_timesteps, ddim_sampling_eta=ddim_sampling_eta, return_all_timesteps=return_all_timesteps)
     
     def complete_samples(self, shape, device, condition=None, condition_cross=None, noise_fn=torch.randn,
-                    clip_denoised=True, keep_running=False, partial_boxes=None, dual_path_compare=True):
+                    clip_denoised=True, keep_running=False, partial_boxes=None, dual_path_compare=True, noise_cache=None):
         """
         Complete samples based on partial boxes.
         
@@ -906,6 +906,7 @@ class DiffusionPoint(nn.Module):
             dual_path_compare: If True, returns (img_baseline, img_physcene) tuple for fair comparison.
                                Both paths use the same shared noise at each step.
                                If False, returns only the PhyScene result.
+            noise_cache: Optional DiffusionNoiseCache for deterministic sampling across checkpoints.
         """
         # return self.diffusion.p_sample_loop_complete(self._denoise, shape=shape, device=device, condition=condition, condition_cross=condition_cross, noise_fn=noise_fn,
         #                                     clip_denoised=clip_denoised,
@@ -913,7 +914,7 @@ class DiffusionPoint(nn.Module):
         return self.diffusion.physcene.p_sample_loop_complete(self._denoise, shape=shape, device=device, condition=condition, condition_cross=condition_cross, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
                                             keep_running=keep_running, partial_boxes=partial_boxes,
-                                            dual_path_compare=dual_path_compare)
+                                            dual_path_compare=dual_path_compare, noise_cache=noise_cache)
 
     def arrange_samples(self, shape, device, condition=None, condition_cross=None, noise_fn=torch.randn,
                     clip_denoised=True, keep_running=False, input_boxes=None):

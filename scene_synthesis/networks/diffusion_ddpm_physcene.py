@@ -4,8 +4,8 @@ import math
 
 import time
 
-DEBUG_PRINT = True
-USE_PHYSCENE = True
+DEBUG_PRINT = False
+USE_PHYSCENE = False
 
 CLASS_ID_VALS = {
     'vanity': 0,
@@ -292,7 +292,7 @@ class GaussianDiffusionPhyScene:
 
     def p_sample_loop_complete(self, denoise_fn, shape, device, condition, condition_cross,
                       noise_fn=torch.randn, clip_denoised=True, keep_running=False, partial_boxes=None,
-                      dual_path_compare=True):
+                      dual_path_compare=True, noise_cache=None):
         """
         Complete samples based on partial samples.
         
@@ -300,6 +300,8 @@ class GaussianDiffusionPhyScene:
             dual_path_compare: If True, runs two paths (baseline and PhyScene) with shared noise
                                and returns (img_t_baseline, img_t_physcene).
                                If False, only runs PhyScene path and returns img_t.
+            noise_cache: Optional DiffusionNoiseCache for deterministic sampling across checkpoints.
+                         If provided, uses pre-generated noise instead of noise_fn.
         
         keep_running: True if we run 2 x num_timesteps, False if we just run num_timesteps
         """
@@ -346,7 +348,12 @@ class GaussianDiffusionPhyScene:
         num_partial = partial_boxes.shape[1]
         
         # Generate SHARED initial noise for fair comparison
-        initial_noise = noise_fn(size=shape, dtype=torch.float, device=device)
+        # Use noise_cache if provided (for multi-checkpoint evaluation)
+        if noise_cache is not None:
+            initial_noise = noise_cache.initial_noise.to(device=device, dtype=torch.float)
+            print("[NOISE CACHE] Using pre-generated initial noise for deterministic sampling")
+        else:
+            initial_noise = noise_fn(size=shape, dtype=torch.float, device=device)
         
         if dual_path_compare:
             # Two paths: baseline (no guidance) and PhyScene (with guidance)
@@ -416,11 +423,19 @@ class GaussianDiffusionPhyScene:
             t_ = torch.empty(shape[0], dtype=torch.int64, device=device).fill_(t)
 
             # Generate SHARED noise for partial boxes re-noising (used by both paths)
-            shared_noise_partial = noise_fn(size=partial_boxes.shape, dtype=torch.float, device=device)
+            # Use noise_cache if provided (for multi-checkpoint evaluation)
+            if noise_cache is not None and t in noise_cache.partial_noises:
+                shared_noise_partial = noise_cache.partial_noises[t].to(device=device, dtype=torch.float)
+            else:
+                shared_noise_partial = noise_fn(size=partial_boxes.shape, dtype=torch.float, device=device)
             partial_boxes_t = self.diffusion.q_sample(x_start=partial_boxes, t=t_, noise=shared_noise_partial)
 
             # Generate SHARED noise for sampling step (used by both paths)
-            shared_noise_sample = noise_fn(size=shape, dtype=torch.float, device=device)
+            # Use noise_cache if provided (for multi-checkpoint evaluation)
+            if noise_cache is not None and t in noise_cache.timestep_noises:
+                shared_noise_sample = noise_cache.timestep_noises[t].to(device=device, dtype=torch.float)
+            else:
+                shared_noise_sample = noise_fn(size=shape, dtype=torch.float, device=device)
 
             if dual_path_compare:
                 # ========== PATH 1: Baseline (no PhyScene guidance) ==========

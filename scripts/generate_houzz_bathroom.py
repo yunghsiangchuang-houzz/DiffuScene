@@ -275,7 +275,7 @@ def main(argv):
             
             with torch.no_grad():
                 # Dual-path comparison: get both baseline and PhyScene results with shared noise
-                bbox_params_baseline, bbox_params_physcene = network.complete_scene(
+                bbox_params = network.complete_scene(
                     room_mask=room_mask_batch,
                     num_points=config["network"]["sample_num_points"],
                     point_dim=config["network"]["point_dim"],
@@ -287,12 +287,11 @@ def main(argv):
                     batch_seeds=batch_seeds,
                     ddim=args.ddim,
                     keep_empty=True,
-                    dual_path_compare=True  # Enable dual-path comparison
+                    dual_path_compare=False  # Enable dual-path comparison
                 )
             
             # Post-process both paths
-            boxes_baseline = dataset.post_process(bbox_params_baseline)
-            boxes_physcene = dataset.post_process(bbox_params_physcene)
+            boxes = dataset.post_process(bbox_params)
             
             # Save results: layout is [scene0_sample0, scene0_sample1, ..., scene1_sample0, ...]
             for scene_offset in range(batch_scenes):
@@ -302,25 +301,15 @@ def main(argv):
                 for sample_idx in range(args.n_samples):
                     result_idx = scene_offset * args.n_samples + sample_idx
                     
-                    # Save baseline result (without PhyScene guidance)
-                    sample_boxes_baseline = {}
-                    for k, v in boxes_baseline.items():
+                    # Save result
+                    sample_boxes = {}
+                    for k, v in boxes.items():
                         if isinstance(v, torch.Tensor):
-                            sample_boxes_baseline[k] = v[result_idx].cpu().numpy()
+                            sample_boxes[k] = v[result_idx].cpu().numpy()
                         else:
-                            sample_boxes_baseline[k] = v[result_idx]
-                    npz_path_baseline = os.path.join(sample_dir, f"boxes_{sample_idx}.npz")
-                    np.savez(npz_path_baseline, **sample_boxes_baseline)
-                    
-                    # Save PhyScene result (with guidance)
-                    sample_boxes_physcene = {}
-                    for k, v in boxes_physcene.items():
-                        if isinstance(v, torch.Tensor):
-                            sample_boxes_physcene[k] = v[result_idx].cpu().numpy()
-                        else:
-                            sample_boxes_physcene[k] = v[result_idx]
-                    npz_path_physcene = os.path.join(sample_dir, f"boxes_{sample_idx}_phy.npz")
-                    np.savez(npz_path_physcene, **sample_boxes_physcene)
+                            sample_boxes[k] = v[result_idx]
+                    npz_path = os.path.join(sample_dir, f"boxes_{sample_idx}.npz")
+                    np.savez(npz_path, **sample_boxes)
         
         print("Done generation.")
         return
