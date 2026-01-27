@@ -14,7 +14,7 @@ from einops import rearrange, reduce
 from functools import partial
 from collections import namedtuple
 from .loss import axis_aligned_bbox_overlaps_3d
-from .diffusion_ddpm_physcene import GaussianDiffusionPhyScene
+from .diffusion_ddpm_physcene_update import GaussianDiffusionPhyScene
 
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
