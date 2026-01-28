@@ -25,7 +25,12 @@ def create_viewer_html(comparisons_dir, output_path):
     """Create a self-contained HTML viewer for all comparison SVGs."""
     
     comparisons_dir = Path(comparisons_dir)
-    svg_files = sorted(comparisons_dir.glob('*_compare.svg'))
+    # Search for comparison_grid.svg files recursively
+    svg_files = sorted(comparisons_dir.glob('**/comparison_grid.svg'))
+    
+    # Also check for *_compare.svg files in the root directory (for backward compatibility)
+    if not svg_files:
+        svg_files = sorted(comparisons_dir.glob('*_compare.svg'))
     
     if not svg_files:
         print(f"No comparison SVG files found in {comparisons_dir}")
@@ -36,7 +41,14 @@ def create_viewer_html(comparisons_dir, output_path):
     # Read all SVG files and extract their content
     svg_data = []
     for svg_file in tqdm(svg_files, desc="Reading SVGs"):
-        scene_id = svg_file.stem.replace('_compare', '')
+        # Extract scene ID from parent directory name
+        if svg_file.name == 'comparison_grid.svg':
+            # Get the parent directory name (scene ID)
+            scene_id = svg_file.parent.name
+        else:
+            # For backward compatibility with *_compare.svg files
+            scene_id = svg_file.stem.replace('_compare', '')
+        
         with open(svg_file, 'r') as f:
             svg_content = f.read()
         

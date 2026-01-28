@@ -121,7 +121,7 @@ def compute_scene_bounds(boxes, valid_mask):
     
     return (min(xs), max(xs), min(zs), max(zs))
 
-def visualize_scene_to_svg(translations, sizes, angles, class_labels, fixed_bounds=None, num_partial_boxes=None):
+def visualize_scene_to_svg(translations, sizes, angles, class_labels, fixed_bounds=None):
     """
     Create SVG visualization from scene parameters.
     
@@ -131,15 +131,28 @@ def visualize_scene_to_svg(translations, sizes, angles, class_labels, fixed_boun
         angles: (N, 1) or (N, 2) array of object rotations
         class_labels: (N, C) one-hot or (N,) index array of class labels
         fixed_bounds: Optional (min_x, max_x, min_z, max_z) to use for alignment
-        num_partial_boxes: Number of partial boxes (architecture). Architecture beyond this is filtered.
     
     Returns:
         str: SVG content
     """
     # Handle class labels
     if len(class_labels.shape) > 1 and class_labels.shape[1] > 1:
-        # One-hot
-        cls_indices = np.argmax(class_labels, axis=-1)
+        # One-hot or diffusion format (-1/1)
+        # Check if it's diffusion format (contains -1 values)
+        is_diffusion_format = np.any(class_labels < 0)
+        
+        if is_diffusion_format:
+            # Diffusion format: empty boxes are all -1, non-empty have one 1 and rest -1
+            # Check for empty boxes (all -1) before using argmax
+            max_values = np.max(class_labels, axis=-1)
+            is_empty = max_values < 0  # All values are -1, so max is -1
+            cls_indices = np.argmax(class_labels, axis=-1)
+            # Mark empty boxes with empty class index
+            empty_idx = CLASS_LABELS.index('empty')
+            cls_indices[is_empty] = empty_idx
+        else:
+            # Standard one-hot format (0/1)
+            cls_indices = np.argmax(class_labels, axis=-1)
     else:
         cls_indices = class_labels.flatten()
     
@@ -157,17 +170,6 @@ def visualize_scene_to_svg(translations, sizes, angles, class_labels, fixed_boun
     # Filter empty
     empty_idx = CLASS_LABELS.index('empty')
     valid_mask = cls_indices != empty_idx
-    
-    # Filter generated architecture (only show partial architecture + furniture)
-    # Architecture classes: floor=4, wall=5, door=6, window=7
-    # Furniture classes: vanity=0, toilet=1, shower=2, tub=3
-    if num_partial_boxes is not None:
-        for i in range(n_objs):
-            cls_idx = cls_indices[i]
-            is_arch = cls_idx >= 4 and cls_idx <= 7  # floor, wall, door, window
-            is_generated = i >= num_partial_boxes
-            if is_arch and is_generated:
-                valid_mask[i] = False  # Filter out generated architecture
     
     # Also filter zero-size boxes (degenerate)
     size_magnitude = np.sqrt(np.sum(sizes ** 2, axis=1))
@@ -252,20 +254,15 @@ def main():
         house_id = scene_dir.name
         pbar.set_description(f"Processing {house_id}")
         
-        # Determine bounds and count partial boxes from original JSON if possible
+        # Determine bounds from original JSON if possible
         original_json_path = scene_dir / "simple_design_filtered.json"
         bounds = None
-        num_partial_boxes = None  # Number of architecture elements in partial scene
         if original_json_path.exists():
             try:
                 with open(original_json_path, 'r') as f_json:
                     scene_data = json.load(f_json)
                 json_items = scene_data['items'] if isinstance(scene_data, dict) else scene_data
                 all_json_points = []
-                
-                # Count architecture elements (floor, wall, door, window)
-                arch_types = {'floor', 'wall', 'door', 'window'}
-                num_partial_boxes = sum(1 for item in json_items if item.get('diffusion_type', '') in arch_types)
                 
                 for item in json_items:
                     cx, cz = item.get('center_x', 0), item.get('center_z', 0)
@@ -299,8 +296,7 @@ def main():
                 sizes=sizes,
                 angles=angles,
                 class_labels=class_labels,
-                fixed_bounds=bounds,
-                num_partial_boxes=num_partial_boxes
+                fixed_bounds=bounds
             )
             
             svg_path = scene_dir / npz_filename.replace('.npz', '.svg')

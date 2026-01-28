@@ -29,6 +29,7 @@ import json
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
+from tqdm import tqdm
 
 # Add scripts directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -111,16 +112,12 @@ def extract_valid_items(
     sizes: np.ndarray,
     angles: np.ndarray,
     class_labels: np.ndarray,
-    arch_range: Tuple[int, int] = (0, 40),
-    fixture_range: Tuple[int, int] = (40, 50),
 ) -> Tuple[Dict, Dict]:
     """
     Extract valid (non-empty) architecture and fixture items from sample.
     
-    Data structure:
-    - Points 0-39 (arch_range): Architecture space (walls, doors, floors, windows)
-    - Points 40-49 (fixture_range): Fixtures space (vanity, toilet, shower, tub)
-    - Items with zero size are empty/padding regardless of class label
+    Note: Generated architecture and empty boxes are already removed by filter_generated_architecture.py,
+    so we classify items directly by their class labels, not by position.
     
     Returns:
         fixtures: Dict mapping fixture type to list of item dicts
@@ -128,7 +125,18 @@ def extract_valid_items(
     """
     # Get class indices
     if class_labels.ndim == 2:
-        cls_indices = np.argmax(class_labels, axis=-1)
+        # Check if it's diffusion format (contains -1 values)
+        is_diffusion_format = np.any(class_labels < 0)
+        if is_diffusion_format:
+            # Diffusion format: empty boxes are all -1, non-empty have one 1 and rest -1
+            max_values = np.max(class_labels, axis=-1)
+            is_empty = max_values < 0  # All values are -1, so max is -1
+            cls_indices = np.argmax(class_labels, axis=-1)
+            # Mark empty boxes with a high index (will be filtered by size check)
+            cls_indices[is_empty] = 999  # Invalid index, will be filtered
+        else:
+            # Standard one-hot format (0/1)
+            cls_indices = np.argmax(class_labels, axis=-1)
     else:
         cls_indices = class_labels
     
@@ -137,15 +145,16 @@ def extract_valid_items(
     if angles.ndim == 2 and angles.shape[1] == 1:
         angles_flat = angles.flatten()
     
-    # Size threshold for valid items (filter out zero-size padding)
+    # Size threshold for valid items (filter out zero-size padding as safety net)
+    # Note: Empty boxes should already be removed by filter_generated_architecture.py
     size_norms = np.linalg.norm(sizes, axis=-1)
     valid_mask = size_norms > 0.01
     
     fixtures = {name: [] for name in FIXTURE_TYPES}
     arch = {'walls': [], 'doors': [], 'floors': [], 'windows': []}
     
-    # Extract architecture from arch_range (0-39)
-    for i in range(arch_range[0], min(arch_range[1], len(cls_indices))):
+    # Iterate through all boxes and classify by class label, not position
+    for i in range(len(cls_indices)):
         if not valid_mask[i]:
             continue
             
@@ -154,10 +163,6 @@ def extract_valid_items(
             continue
             
         label = CLASS_LABELS_8[cls_idx]
-        
-        # Only accept architecture types in arch range
-        if label not in ARCH_TYPES:
-            continue
         
         item = {
             'center': translations[i],
@@ -166,38 +171,18 @@ def extract_valid_items(
             'bbox': _get_aabb(translations[i], sizes[i] / 2),  # sizes are full, convert to half
         }
         
-        if label == 'wall':
-            arch['walls'].append(item)
-        elif label == 'door':
-            arch['doors'].append(item)
-        elif label == 'floor':
-            arch['floors'].append(item)
-        elif label == 'window':
-            arch['windows'].append(item)
-    
-    # Extract fixtures from fixture_range (40-49)
-    for i in range(fixture_range[0], min(fixture_range[1], len(cls_indices))):
-        if not valid_mask[i]:
-            continue
-            
-        cls_idx = cls_indices[i]
-        if cls_idx >= len(CLASS_LABELS_8):
-            continue
-            
-        label = CLASS_LABELS_8[cls_idx]
-        
-        # Only accept fixture types in fixture range
-        if label not in FIXTURE_TYPES:
-            continue
-        
-        item = {
-            'center': translations[i],
-            'size': sizes[i],
-            'angle': angles_flat[i] if i < len(angles_flat) else 0,
-            'bbox': _get_aabb(translations[i], sizes[i] / 2),
-        }
-        
-        fixtures[label].append(item)
+        # Classify by class label
+        if label in ARCH_TYPES:
+            if label == 'wall':
+                arch['walls'].append(item)
+            elif label == 'door':
+                arch['doors'].append(item)
+            elif label == 'floor':
+                arch['floors'].append(item)
+            elif label == 'window':
+                arch['windows'].append(item)
+        elif label in FIXTURE_TYPES:
+            fixtures[label].append(item)
     
     return fixtures, arch
 
@@ -225,19 +210,19 @@ def score_single_sample(
     sizes: np.ndarray,
     angles: np.ndarray,
     class_labels: np.ndarray,
-    arch_range: Tuple[int, int] = (0, 40),
-    fixture_range: Tuple[int, int] = (40, 50),
 ) -> Tuple[float, Dict]:
     """
     Score a single sample using bathroom layout quality metrics.
+    
+    Note: Generated architecture and empty boxes are already removed by filter_generated_architecture.py.
+    Items are classified by class labels, not by position.
     
     Returns:
         score: Quality score (higher is better)
         breakdown: Dict with score components
     """
     fixtures, arch = extract_valid_items(
-        translations, sizes, angles, class_labels,
-        arch_range=arch_range, fixture_range=fixture_range
+        translations, sizes, angles, class_labels
     )
     
     walls = arch['walls']
@@ -402,37 +387,35 @@ def _min_fixture_wall_dist(fixture: Dict, wall: Dict) -> float:
 
 def score_samples(
     samples: List[Dict],
-    arch_num_points: int = 40,
-    total_points: int = 50,
     weights: Optional[ScoringWeights] = None,
+    show_progress: bool = False,
 ) -> np.ndarray:
     """
     Score all samples.
     
+    Note: Generated architecture and empty boxes are already removed by filter_generated_architecture.py.
+    Items are classified by class labels, not by position.
+    
     Args:
         samples: List of sample dicts
-        arch_num_points: Number of architecture points (first N points, default 40)
-        total_points: Total number of points (default 50)
         weights: Not used (kept for API compatibility)
+        show_progress: Whether to show progress bar for scoring
     
     Returns:
         scores: Array of scores for all samples
     """
     all_scores = np.zeros(len(samples), dtype=np.float32)
     
-    arch_range = (0, arch_num_points)
-    fixture_range = (arch_num_points, total_points)
-    
-    for i, sample in enumerate(samples):
+    iterator = tqdm(samples, desc="Scoring samples", unit="sample", disable=not show_progress)
+    for i, sample in enumerate(iterator):
         trans = sample['translations']
         sizes = sample['sizes']
         angles = sample['angles']
         class_labels = sample['class_labels']
         
-        # Score the sample with proper arch/fixture separation
+        # Score the sample (items classified by class labels)
         score, _ = score_single_sample(
-            trans, sizes, angles, class_labels,
-            arch_range=arch_range, fixture_range=fixture_range
+            trans, sizes, angles, class_labels
         )
         all_scores[i] = score
     
@@ -443,20 +426,19 @@ def select_and_copy_top_k(
     folder_path: str,
     output_dir: Optional[str] = None,
     top_k: int = 5,
-    arch_num_points: int = 40,
-    total_points: int = 50,
     create_grid: bool = True,
     verbose: bool = True,
 ) -> Tuple[List[int], np.ndarray]:
     """
     Score samples, select top-K, and copy SVG files to output directory.
     
+    Note: Items are classified by class labels, not by position. Generated architecture
+    and empty boxes are already removed by filter_generated_architecture.py.
+    
     Args:
         folder_path: Path to folder containing boxes_*.npz and boxes_*.svg files
         output_dir: Output directory for top-K SVGs (default: folder_path/top_k)
         top_k: Number of top samples to select
-        arch_num_points: Number of architecture points (first N points, default 40)
-        total_points: Total number of points per sample (default 50)
         create_grid: Whether to create a comparison grid SVG
         verbose: Whether to print progress
     
@@ -478,25 +460,19 @@ def select_and_copy_top_k(
     # Load samples
     samples, bounds, svg_paths = load_samples_from_folder(folder_path)
     
-    if verbose:
-        print(f"Loaded {len(samples)} samples from {folder_path}")
-    
     # Limit top_k to available samples
     top_k = min(top_k, len(samples))
     
-    # Score samples
-    all_scores = score_samples(samples, arch_num_points, total_points)
+    # Score samples (only show progress for single folder processing with verbose)
+    # Note: Generated architecture and empty boxes are already removed by filter_generated_architecture.py
+    show_scoring_progress = verbose and len(samples) > 10
+    all_scores = score_samples(
+        samples, 
+        show_progress=show_scoring_progress
+    )
     
     # Get top-K indices
     top_indices = np.argsort(all_scores)[-top_k:][::-1]
-    
-    if verbose:
-        print(f"\nScore statistics:")
-        print(f"  Min: {all_scores.min():.2f}, Max: {all_scores.max():.2f}")
-        print(f"  Mean: {all_scores.mean():.2f}, Std: {all_scores.std():.2f}")
-        print(f"\nTop {top_k} samples:")
-        for rank, idx in enumerate(top_indices):
-            print(f"  #{rank+1}: Sample {idx} (score: {all_scores[idx]:.2f})")
     
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -511,11 +487,9 @@ def select_and_copy_top_k(
             dst_svg = output_dir / dst_name
             shutil.copy2(src_svg, dst_svg)
             copied_files.append(dst_svg)
-            if verbose:
-                print(f"  Copied: {src_svg.name} -> {dst_name}")
         else:
             if verbose:
-                print(f"  Warning: SVG not found: {src_svg}")
+                print(f"Warning: SVG not found: {src_svg}", file=sys.stderr)
     
     # Also copy corresponding NPZ files
     for rank, idx in enumerate(top_indices):
@@ -542,23 +516,18 @@ def select_and_copy_top_k(
                 label_svg = f.read()
             grid_items.append(("GT Label", extract_svg_inner(label_svg)))
         
-        # Add top-K samples
+        # Add top-K samples - use copied SVG files directly instead of regenerating from .npz
+        # This ensures the comparison grid matches the top_*.svg files (with generated architecture filtered)
         for rank, idx in enumerate(top_indices):
-            sample = samples[idx]
-            svg_content = visualize_scene_to_svg(
-                sample['translations'],
-                sample['sizes'],
-                sample['angles'],
-                sample['class_labels'],
-                fixed_bounds=grid_bounds
-            )
+            # Read the SVG file that was already copied (already filtered correctly)
+            svg_file = copied_files[rank]
+            with open(svg_file, 'r') as f:
+                svg_content = f.read()
             score = all_scores[idx]
             grid_items.append((f"#{rank+1} (S{idx}, {score:.1f})", extract_svg_inner(svg_content)))
         
         grid_output = output_dir / "comparison_grid.svg"
         create_comparison_grid_svg(grid_items, str(grid_output))
-        if verbose:
-            print(f"\nSaved comparison grid to: {grid_output}")
     
     # Save scores summary
     scene_id = folder.name
@@ -583,11 +552,6 @@ def select_and_copy_top_k(
     with open(scores_json, 'w') as f:
         json.dump(scores_data, f, indent=2)
     
-    if verbose:
-        print(f"Saved scores summary to: {scores_json}")
-        print(f"\nOutput directory: {output_dir}")
-        print(f"Total files copied: {len(copied_files)} SVGs + {len(copied_files)} NPZs")
-    
     return top_indices.tolist(), all_scores
 
 
@@ -595,8 +559,6 @@ def process_folder_recursive(
     base_folder: str,
     output_base: Optional[str] = None,
     top_k: int = 5,
-    arch_num_points: int = 40,
-    total_points: int = 50,
     verbose: bool = True,
 ) -> Dict[str, Tuple[List[int], np.ndarray]]:
     """
@@ -608,8 +570,6 @@ def process_folder_recursive(
         base_folder: Base folder to search
         output_base: Base output folder (default: each scene's own top_k subfolder)
         top_k: Number of top samples per scene
-        arch_num_points: Number of architecture points (first N points, default 40)
-        total_points: Total number of points per sample (default 50)
         verbose: Whether to print progress
     
     Returns:
@@ -626,15 +586,11 @@ def process_folder_recursive(
     scene_folders = sorted(scene_folders)
     
     if not scene_folders:
-        print(f"No scene folders found under {base_folder}")
+        print(f"No scene folders found under {base_folder}", file=sys.stderr)
         return results
     
-    print(f"Found {len(scene_folders)} scene folder(s) to process")
-    print("=" * 60)
-    
-    for i, folder in enumerate(scene_folders):
-        print(f"\n[{i+1}/{len(scene_folders)}] Processing: {folder.name}")
-        
+    # Process folders with tqdm progress bar
+    for folder in tqdm(scene_folders, desc="Processing scenes", unit="scene"):
         try:
             if output_base:
                 output_dir = Path(output_base) / folder.name / "top_k"
@@ -645,19 +601,17 @@ def process_folder_recursive(
                 str(folder),
                 output_dir=str(output_dir) if output_dir else None,
                 top_k=top_k,
-                arch_num_points=arch_num_points,
-                total_points=total_points,
                 create_grid=True,
-                verbose=verbose,
+                verbose=False,  # Disable verbose output in recursive mode
             )
             results[str(folder)] = (top_indices, all_scores)
             
         except Exception as e:
-            print(f"  Error processing {folder}: {e}")
+            tqdm.write(f"Error processing {folder}: {e}", file=sys.stderr)
             continue
     
-    print("\n" + "=" * 60)
-    print(f"Processed {len(results)} / {len(scene_folders)} scene folder(s)")
+    if verbose:
+        print(f"\nProcessed {len(results)} / {len(scene_folders)} scene folder(s)")
     
     return results
 
@@ -692,20 +646,6 @@ def main():
     )
     
     parser.add_argument(
-        "--arch_num_points",
-        type=int,
-        default=40,
-        help="Number of architecture points (first N points in each sample, default: 40)"
-    )
-    
-    parser.add_argument(
-        "--total_points",
-        type=int,
-        default=50,
-        help="Total number of points per sample (default: 50)"
-    )
-    
-    parser.add_argument(
         "--no_grid",
         action="store_true",
         help="Skip creating comparison grid SVG"
@@ -732,8 +672,6 @@ def main():
             str(folder),
             output_base=args.output_dir,
             top_k=args.top_k,
-            arch_num_points=args.arch_num_points,
-            total_points=args.total_points,
             verbose=verbose,
         )
     else:
@@ -743,8 +681,6 @@ def main():
                 str(folder),
                 output_dir=args.output_dir,
                 top_k=args.top_k,
-                arch_num_points=args.arch_num_points,
-                total_points=args.total_points,
                 create_grid=not args.no_grid,
                 verbose=verbose,
             )
