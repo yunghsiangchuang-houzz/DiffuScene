@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import csv
 import os
 import sys
 import numpy as np
@@ -90,13 +91,14 @@ def main(argv):
     )
     parser.add_argument(
         "--inference_split",
-        default="test",
-        help="The split to be used for inference"
+        nargs='+',
+        default=["test"],
+        help="The split(s) to be used for inference. Can specify multiple, e.g., --inference_split test val"
     )
     parser.add_argument(
         "--scene_id_filter_file",
         default=None,
-        help="Path to text file containing scene IDs to process (one per line). If provided, only these scenes will be generated."
+        help="Path to text file (one scene ID per line) or CSV file (scene_id,split format) containing scene IDs to process. If CSV, will filter by inference_split(s)."
     )
 
     args = parser.parse_args(argv)
@@ -162,9 +164,9 @@ def main(argv):
         config["data"],
         filter_fn=filter_function(
             config["data"],
-            split=[args.inference_split]
+            split=args.inference_split
         ),
-        split=[args.inference_split]
+        split=args.inference_split
     )
 
     print("Loaded {} scenes with {} object types:".format(
@@ -218,13 +220,31 @@ def main(argv):
             sys.exit(1)
         
         scene_id_filter = set()
-        with open(args.scene_id_filter_file, 'r') as f:
-            for line in f:
-                scene_id = line.strip()
-                if scene_id:  # Skip empty lines
-                    scene_id_filter.add(scene_id)
+        file_ext = os.path.splitext(args.scene_id_filter_file)[1].lower()
         
-        print(f"Loaded {len(scene_id_filter)} scene IDs from filter file: {args.scene_id_filter_file}")
+        if file_ext == '.csv':
+            # CSV format: scene_id,split
+            with open(args.scene_id_filter_file, 'r') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        scene_id, split = row[0].strip(), row[1].strip()
+                        # Only include scenes that match the inference_split(s)
+                        if split in args.inference_split:
+                            scene_id_filter.add(scene_id)
+                            # Also add version with _simple_design_filtered suffix if not present
+                            # This handles mismatch where CSV has IDs without suffix but dataset has them with suffix
+                            if not scene_id.endswith('_simple_design_filtered'):
+                                scene_id_filter.add(scene_id + '_simple_design_filtered')
+            print(f"Loaded {len(scene_id_filter)} scene IDs from CSV file (filtered by splits: {', '.join(args.inference_split)}): {args.scene_id_filter_file}")
+        else:
+            # Text file format: one scene ID per line
+            with open(args.scene_id_filter_file, 'r') as f:
+                for line in f:
+                    scene_id = line.strip()
+                    if scene_id:  # Skip empty lines
+                        scene_id_filter.add(scene_id)
+            print(f"Loaded {len(scene_id_filter)} scene IDs from filter file: {args.scene_id_filter_file}")
         
         # Pre-filter: find indices of scenes that match the filter
         filtered_scene_indices = []
@@ -234,8 +254,14 @@ def main(argv):
             except Exception:
                 scene_id = f"scene_{idx}"
             
+            # Check if scene_id matches filter (exact match or without _simple_design_filtered suffix)
             if scene_id in scene_id_filter:
                 filtered_scene_indices.append(idx)
+            elif scene_id.endswith('_simple_design_filtered'):
+                # Try matching without the suffix
+                base_scene_id = scene_id.replace('_simple_design_filtered', '')
+                if base_scene_id in scene_id_filter:
+                    filtered_scene_indices.append(idx)
         
         print(f"Found {len(filtered_scene_indices)} matching scenes in dataset (out of {len(dataset)} total)")
         print(f"Will process only these {len(filtered_scene_indices)} scenes.")
@@ -265,9 +291,29 @@ def main(argv):
         tqdm.write(f"Processing scene {actual_scene_id} (index {scene_idx})")
         
         # Load noise cache for this scene
-        cache_path = os.path.join(args.noise_cache_dir, f"{actual_scene_id}.pt")
-        if not os.path.exists(cache_path):
-            tqdm.write(f"  WARNING: Noise cache not found: {cache_path}")
+        # Try multiple naming conventions to handle mismatch between dataset IDs and cache file names
+        cache_path = None
+        possible_paths = []
+        
+        # First try exact match
+        possible_paths.append(os.path.join(args.noise_cache_dir, f"{actual_scene_id}.pt"))
+        
+        # If scene ID has _simple_design_filtered, try without it
+        if actual_scene_id.endswith('_simple_design_filtered'):
+            base_scene_id = actual_scene_id.replace('_simple_design_filtered', '')
+            possible_paths.append(os.path.join(args.noise_cache_dir, f"{base_scene_id}.pt"))
+        else:
+            # If scene ID doesn't have suffix, try with it
+            possible_paths.append(os.path.join(args.noise_cache_dir, f"{actual_scene_id}_simple_design_filtered.pt"))
+        
+        # Try each possible path
+        for path in possible_paths:
+            if os.path.exists(path):
+                cache_path = path
+                break
+        
+        if cache_path is None:
+            tqdm.write(f"  WARNING: Noise cache not found. Tried: {possible_paths}")
             missing_caches.append(actual_scene_id)
             continue
         

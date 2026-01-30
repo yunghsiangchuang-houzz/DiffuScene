@@ -42,7 +42,8 @@ CLASS_LABELS = ["vanity", "toilet", "shower", "tub", "floor", "wall", "door", "w
 # Default: compare only v1.2_no_aug and v1.2_no_aug_fixed_iou
 MODEL_SETTINGS = [
     "v1.2_no_aug",
-    "v1.2_no_aug_fixed_iou"
+    "v1.3_no_aug",
+    "v1.3_aug_fixed_iou"
 ]
 
 

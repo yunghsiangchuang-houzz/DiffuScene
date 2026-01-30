@@ -1,5 +1,5 @@
 """
-Generate noise caches for all scenes in a split (e.g., test set).
+Generate noise caches for all scenes in one or more splits (e.g., test set).
 
 This pre-generates all random noise needed for diffusion sampling,
 allowing deterministic comparison across multiple checkpoints.
@@ -10,6 +10,15 @@ Usage:
         --split_file config/houzz_bathroom_splits_v1.2.csv \
         --output_dir output/noise_caches \
         --split test \
+        --n_samples 6 \
+        --base_seed 42
+    
+    # Generate for multiple splits:
+    python scripts/generate_noise_cache.py \
+        config/uncond/diffusion_houzz_bathroom_v1.2_no_aug_fixed_iou.yaml \
+        --split_file config/houzz_bathroom_splits_v1.2.csv \
+        --output_dir output/noise_caches \
+        --split test val \
         --n_samples 6 \
         --base_seed 42
 """
@@ -49,8 +58,9 @@ def main():
     )
     parser.add_argument(
         "--split",
-        default="test",
-        help="Which split to generate caches for (test, train, val)"
+        nargs='+',
+        default=["test"],
+        help="Which split(s) to generate caches for (test, train, val). Can specify multiple, e.g., --split test val"
     )
     parser.add_argument(
         "--n_samples",
@@ -89,10 +99,11 @@ def main():
         for row in reader:
             if len(row) >= 2:
                 scene_id, split = row[0].strip(), row[1].strip()
-                if split == args.split:
+                if split in args.split:
                     scene_ids.append(scene_id)
     
-    print(f"\nFound {len(scene_ids)} scenes in '{args.split}' split")
+    splits_str = ", ".join(args.split)
+    print(f"\nFound {len(scene_ids)} scenes in split(s): {splits_str}")
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -125,7 +136,7 @@ def main():
     metadata = {
         'config_file': args.config_file,
         'split_file': args.split_file,
-        'split': args.split,
+        'split': args.split,  # Now a list of splits
         'n_samples': args.n_samples,
         'base_seed': args.base_seed,
         'num_points': num_points,
