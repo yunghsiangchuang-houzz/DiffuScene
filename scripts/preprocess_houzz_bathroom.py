@@ -180,8 +180,8 @@ class HouzzPreprocessor:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_dir', default='data/bathroom_svg_files')
-    parser.add_argument('--output_dir', default='data/houzz_bathroom_processed')
+    parser.add_argument('--input_dir', default='data/bathroom_2.2k_filter_v1.4/')
+    parser.add_argument('--output_dir', default='data/bathroom_2.2k_filter_v1.4/3d_front_format')
     args = parser.parse_args()
     
     preprocessor = HouzzPreprocessor(args.output_dir)

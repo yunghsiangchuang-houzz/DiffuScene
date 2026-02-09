@@ -18,6 +18,7 @@ network:
     # Partial condition settings
     room_partial_condition: true
     partial_num_points: 40
+    exclude_self_iou: true
     # Other dims
     objectness_dim: 0
     objfeat_dim: 0

@@ -222,7 +222,7 @@ def main():
                     new_count = npz_data['class_labels'].shape[0]
                     removed_count = original_count - new_count
                     # Save back to npz (overwrite original)
-                    save_path = npz_path.with_suffix('.filtered.npz')
+                    # save_path = npz_path.with_suffix('.filtered.npz')
                     np.savez(npz_path, **npz_data)
                     tqdm.write(f"  Removed {removed_count} boxes (generated arch + empty) from {npz_filename}")
     

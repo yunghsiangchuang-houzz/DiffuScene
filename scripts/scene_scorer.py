@@ -1015,8 +1015,16 @@ def create_comparison_grid_svg(grid_items: List[Tuple[str, str]], output_path: s
         x = c * (cell_w + margin) + margin
         y = r * (cell_h + margin + label_h) + margin + label_h
         
+        # Handle multi-line labels
+        label_parts = label.split('\n')
+        text_svg = ""
+        # If multiple lines, stack them upwards from y=-5
+        for line_idx, part in enumerate(reversed(label_parts)):
+            y_offset = -5 - (line_idx * 12)
+            text_svg += f'<text x="{cell_w/2}" y="{y_offset}" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">{part}</text>\n'
+        
         grid_svg.append(f'''<g transform="translate({x}, {y})">
-            <text x="{cell_w/2}" y="-5" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">{label}</text>
+            {text_svg}
             {content}
         </g>''')
     

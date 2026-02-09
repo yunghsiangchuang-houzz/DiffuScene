@@ -2,16 +2,16 @@
 cd ./scripts
 
 # Configuration for the 3 model versions to evaluate
-declare -a versions=("v1.3_aug_fixed_iou")
+declare -a versions=("v1.3_aug" "v1.4_no_aug")
 
 # Common parameters
-n_samples=10
-scene_filter="../output/model_eval_2/selected_scene_ids.txt"
-noise_cache_dir="../output/noise_caches"
-inference_split="test"
+n_samples=64
+scene_filter="../config/houz_bathroom_non_training_diffusion_alphachip.csv"
+noise_cache_dir="../output/model_eval_final/noise_caches_non_training_diffusion_alphachip"
+inference_split="val test"
 
 echo "=========================================="
-echo "Model Evaluation on Selected 30 Scenes"
+echo "Model Evaluation on Selected Scenes"
 echo "=========================================="
 echo "Noise cache dir: $noise_cache_dir"
 echo "Scene filter: $scene_filter"
@@ -26,7 +26,7 @@ for version in "${versions[@]}"; do
     
     # Set paths based on version
     config="../config/uncond/diffusion_houzz_bathroom_${version}.yaml"
-    output_dir="../output/model_eval_2/${version}"
+    output_dir="../output/model_eval_v1.3_aug_v1.4_no_aug/${version}"
     weight_file="../output/houzz_bathroom_${version}/houzz_bathroom_${version}/model_best"
     
     # Create output directory
@@ -76,4 +76,3 @@ for version in "${versions[@]}"; do
     echo "  - output/model_eval/${version}/"
 done
 echo ""
-
